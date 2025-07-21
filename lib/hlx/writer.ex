@@ -18,7 +18,7 @@ defmodule HLX.Writer do
           | {:auto_select, boolean()}
         ]
 
-  @type variant_opts :: [{:tracks, ExMP4.Track.t()} | {:audio, String.t()}]
+  @type variant_opts :: [{:tracks, [ExMP4.Track.t()]} | {:audio, String.t()}]
 
   @spec start_link(Keyword.t()) :: GenServer.on_start()
   def start_link(opts) do
@@ -164,9 +164,20 @@ defmodule HLX.Writer do
         state.variants
       end
 
-    if flushed? and state.type == :master, do: serialize_master_playlist(state.variants)
+    variants =
+      if flushed? and state.type == :master do
+        variants =
+          variant
+          |> update_bandwidth(get_referenced_renditions(variant, Map.values(variants)))
+          |> then(&Map.put(variants, variant_or_rendition, &1))
 
-    {:noreply, %{state | variants: Map.put(variants, variant_or_rendition, variant)}}
+        serialize_master_playlist(variants)
+        variants
+      else
+        Map.put(variants, variant_or_rendition, variant)
+      end
+
+    {:noreply, %{state | variants: variants}}
   end
 
   defp flush_and_write(variant, name) do
@@ -188,5 +199,36 @@ defmodule HLX.Writer do
       })
 
     File.write!("master.m3u8", payload)
+  end
+
+  defp get_referenced_renditions(rendition, renditions) do
+    case Rendition.referenced_renditions(rendition) do
+      [] ->
+        []
+
+      group_ids ->
+        renditions
+        |> Enum.group_by(&Rendition.group_id/1)
+        |> Map.take(group_ids)
+    end
+  end
+
+  # check for referenced rendition and update the bandwidth
+  defp update_bandwidth(rendition, renditions) do
+    Enum.reduce(renditions, rendition, fn {_group_id, renditions}, rendition ->
+      avg_bandwidth =
+        renditions
+        |> Enum.map(&Rendition.avg_bandwidth/1)
+        |> Enum.max()
+
+      max_bandwidth =
+        renditions
+        |> Enum.map(&Rendition.max_bandwidth/1)
+        |> Enum.max()
+
+      rendition
+      |> Rendition.add_avg_bandwidth(avg_bandwidth)
+      |> Rendition.add_max_bandwidth(max_bandwidth)
+    end)
   end
 end
