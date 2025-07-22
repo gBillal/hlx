@@ -43,7 +43,7 @@ defmodule HLX.Writer.Rendition do
 
     %__MODULE__{
       name: name,
-      playlist: HLX.MediaPlaylist.new(opts[:max_segments]),
+      playlist: HLX.MediaPlaylist.new(opts),
       tracks: tracks,
       muxer_mod: CMAF,
       muxer_state: muxer_state,
