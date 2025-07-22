@@ -3,7 +3,6 @@ defmodule HLX.Writer.Rendition do
 
   alias ExM3U8.Tags.{Stream, Media}
   alias HLX.Muxer.CMAF
-  alias HLX.Writer.BandwidthCalculator
 
   @type t :: %__MODULE__{
           name: String.t(),
@@ -13,9 +12,7 @@ defmodule HLX.Writer.Rendition do
           muxer_state: any(),
           track_durations: %{non_neg_integer() => non_neg_integer()},
           lead_track: non_neg_integer() | nil,
-          segment_count: non_neg_integer(),
           target_duration: non_neg_integer(),
-          bandwidth_calculator: BandwidthCalculator.t(),
           hls_tag: Stream.t() | Media.t() | nil
         }
 
@@ -27,9 +24,7 @@ defmodule HLX.Writer.Rendition do
     :muxer_state,
     :track_durations,
     :lead_track,
-    :segment_count,
     :target_duration,
-    :bandwidth_calculator,
     :hls_tag
   ]
 
@@ -48,15 +43,13 @@ defmodule HLX.Writer.Rendition do
 
     %__MODULE__{
       name: name,
-      playlist: HLX.MediaPlaylist.new([]),
+      playlist: HLX.MediaPlaylist.new(opts[:max_segments]),
       tracks: tracks,
       muxer_mod: CMAF,
       muxer_state: muxer_state,
       track_durations: init_track_durations(Map.values(tracks), target_duration),
       lead_track: lead_track,
-      segment_count: 0,
       target_duration: Keyword.get(opts, :target_duration, 2_000),
-      bandwidth_calculator: BandwidthCalculator.new(Keyword.get(opts, :max_segments, 0)),
       hls_tag: hls_tag(name, opts)
     }
   end
@@ -93,13 +86,11 @@ defmodule HLX.Writer.Rendition do
     {data, muxer_state} = rendition.muxer_mod.flush_segment(rendition.muxer_state)
     seg_duration = segment_duration(rendition)
 
-    {playlist, _} =
+    {playlist, _discarded} =
       HLX.MediaPlaylist.add_segment(
         rendition.playlist,
-        %{uri: segment_uri, duration: seg_duration}
+        HLX.Segment.new(segment_uri, size: IO.iodata_length(data), duration: seg_duration)
       )
-
-    rendition = update_bandwidth(rendition, IO.iodata_length(data), seg_duration)
 
     {data,
      %{
@@ -107,8 +98,7 @@ defmodule HLX.Writer.Rendition do
        | muxer_state: muxer_state,
          playlist: playlist,
          track_durations:
-           init_track_durations(Map.values(rendition.tracks), rendition.target_duration),
-         segment_count: rendition.segment_count + 1
+           init_track_durations(Map.values(rendition.tracks), rendition.target_duration)
      }}
   end
 
@@ -123,21 +113,26 @@ defmodule HLX.Writer.Rendition do
   def group_id(%{hls_tag: %Media{group_id: group_id}}), do: group_id
   def group_id(_rendition), do: nil
 
-  @spec avg_bandwidth(t()) :: non_neg_integer()
-  def avg_bandwidth(%{bandwidth_calculator: c}), do: BandwidthCalculator.avg_bitrate(c)
+  @spec segment_count(t()) :: non_neg_integer()
+  def segment_count(%{playlist: playlist}), do: HLX.MediaPlaylist.segment_count(playlist)
 
-  @spec max_bandwidth(t()) :: non_neg_integer()
-  def max_bandwidth(%{bandwidth_calculator: c}), do: BandwidthCalculator.max_bitrate(c)
+  @spec bandwidth(t()) :: {non_neg_integer(), non_neg_integer()}
+  def bandwidth(%{playlist: playlist}), do: HLX.MediaPlaylist.bandwidth(playlist)
 
-  @spec add_avg_bandwidth(t(), non_neg_integer()) :: t()
-  def add_avg_bandwidth(%{hls_tag: stream} = rendition, bandwidth) do
-    %{rendition | hls_tag: %{stream | average_bandwidth: stream.average_bandwidth + bandwidth}}
+  @spec to_hls_tag(t(), list(), list()) :: struct() | nil
+  def to_hls_tag(state, max_bandwidths \\ [], avg_bandwidths \\ [])
+
+  def to_hls_tag(%{hls_tag: %Stream{} = stream} = state, max_bandwidths, avg_bandwidths) do
+    {avg_band, max_band} = HLX.MediaPlaylist.bandwidth(state.playlist)
+
+    %{
+      stream
+      | bandwidth: max_band + Enum.sum(max_bandwidths),
+        average_bandwidth: avg_band + Enum.sum(avg_bandwidths)
+    }
   end
 
-  @spec add_max_bandwidth(t(), non_neg_integer()) :: t()
-  def add_max_bandwidth(%{hls_tag: stream} = rendition, bandwidth) do
-    %{rendition | hls_tag: %{stream | bandwidth: stream.bandwidth + bandwidth}}
-  end
+  def to_hls_tag(%{hls_tag: tag}, _max, _avg), do: tag
 
   defp init_track_durations(tracks, target_duration) do
     Map.new(tracks, fn track ->
@@ -180,27 +175,6 @@ defmodule HLX.Writer.Rendition do
           subtitles: opts[:subtitles],
           codecs: ""
         }
-    end
-  end
-
-  defp update_bandwidth(state, seg_size, seg_duration) do
-    bandwidth_calculator =
-      BandwidthCalculator.add_segment(state.bandwidth_calculator, seg_size, seg_duration)
-
-    case state.hls_tag do
-      %Stream{} = stream ->
-        %{
-          state
-          | bandwidth_calculator: bandwidth_calculator,
-            hls_tag: %{
-              stream
-              | bandwidth: BandwidthCalculator.max_bitrate(bandwidth_calculator),
-                average_bandwidth: BandwidthCalculator.avg_bitrate(bandwidth_calculator)
-            }
-        }
-
-      _other ->
-        %{state | bandwidth_calculator: bandwidth_calculator}
     end
   end
 end

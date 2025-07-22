@@ -72,7 +72,12 @@ defmodule HLX.Writer do
 
   @impl true
   def init(options) do
-    {:ok, %State{variants: %{}, type: options[:type] || :media}}
+    {:ok,
+     %State{
+       variants: %{},
+       type: options[:type] || :media,
+       max_segments: options[:max_segments] || 0
+     }}
   end
 
   @impl true
@@ -86,7 +91,7 @@ defmodule HLX.Writer do
     name = opts[:name]
 
     variant_opts =
-      [type: :rendition, target_duration: 2000] ++
+      [type: :rendition, target_duration: 2000, max_segments: state.max_segments] ++
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
     {init_data, variant} =
@@ -109,7 +114,12 @@ defmodule HLX.Writer do
   def handle_call({:add_variant, options}, _from, state) do
     # TODO: validate options
     name = options[:name]
-    rendition_options = [target_duration: 2000, audio: options[:audio]]
+
+    rendition_options = [
+      target_duration: 2000,
+      audio: options[:audio],
+      max_segments: state.max_segments
+    ]
 
     {init_data, variant} =
       name
@@ -152,25 +162,21 @@ defmodule HLX.Writer do
         {Rendition.push_sample(variant, sample), false}
       end
 
+    variants = Map.delete(state.variants, variant_or_rendition)
+
     variants =
       if flush? and lead_variant? do
-        state.variants
-        |> Map.delete(variant_or_rendition)
-        |> Map.new(fn {name, variant} ->
+        Map.new(variants, fn {name, variant} ->
           variant = if variant.lead_track, do: variant, else: flush_and_write(variant, name)
           {name, variant}
         end)
       else
-        state.variants
+        variants
       end
 
     variants =
       if flushed? and state.type == :master do
-        variants =
-          variant
-          |> update_bandwidth(get_referenced_renditions(variant, Map.values(variants)))
-          |> then(&Map.put(variants, variant_or_rendition, &1))
-
+        variants = Map.put(variants, variant_or_rendition, variant)
         serialize_master_playlist(variants)
         variants
       else
@@ -181,7 +187,7 @@ defmodule HLX.Writer do
   end
 
   defp flush_and_write(variant, name) do
-    uri = "#{name}_#{variant.segment_count}.m4s"
+    uri = "#{name}_#{Rendition.segment_count(variant)}.m4s"
     {data, variant} = Rendition.flush(variant, uri)
     File.write!(uri, data)
     File.write!("#{name}.m3u8", HLX.MediaPlaylist.serialize(variant.playlist))
@@ -189,7 +195,25 @@ defmodule HLX.Writer do
   end
 
   defp serialize_master_playlist(variants) do
-    streams = variants |> Map.values() |> Enum.map(& &1.hls_tag)
+    variants = Map.values(variants)
+
+    streams =
+      Enum.map(variants, fn variant ->
+        renditions = get_referenced_renditions(variant, variants)
+
+        {avg_bitrates, max_bitrates} =
+          renditions
+          |> Map.values()
+          |> Enum.map(fn renditions ->
+            renditions
+            |> Enum.map(&Rendition.bandwidth/1)
+            |> Enum.unzip()
+            |> then(fn {a, m} -> {Enum.max(a), Enum.max(m)} end)
+          end)
+          |> Enum.unzip()
+
+        Rendition.to_hls_tag(variant, max_bitrates, avg_bitrates)
+      end)
 
     payload =
       ExM3U8.serialize(%ExM3U8.MultivariantPlaylist{
@@ -204,31 +228,12 @@ defmodule HLX.Writer do
   defp get_referenced_renditions(rendition, renditions) do
     case Rendition.referenced_renditions(rendition) do
       [] ->
-        []
+        %{}
 
       group_ids ->
         renditions
         |> Enum.group_by(&Rendition.group_id/1)
         |> Map.take(group_ids)
     end
-  end
-
-  # check for referenced rendition and update the bandwidth
-  defp update_bandwidth(rendition, renditions) do
-    Enum.reduce(renditions, rendition, fn {_group_id, renditions}, rendition ->
-      avg_bandwidth =
-        renditions
-        |> Enum.map(&Rendition.avg_bandwidth/1)
-        |> Enum.max()
-
-      max_bandwidth =
-        renditions
-        |> Enum.map(&Rendition.max_bandwidth/1)
-        |> Enum.max()
-
-      rendition
-      |> Rendition.add_avg_bandwidth(avg_bandwidth)
-      |> Rendition.add_max_bandwidth(max_bandwidth)
-    end)
   end
 end
