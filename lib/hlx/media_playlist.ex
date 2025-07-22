@@ -1,7 +1,6 @@
 defmodule HLX.MediaPlaylist do
   @moduledoc false
 
-  alias ExM3U8.Tags
   alias HLX.Segment
 
   @type t :: %__MODULE__{
@@ -22,9 +21,6 @@ defmodule HLX.MediaPlaylist do
     :discontinuity_number
   ]
 
-  @type segment :: %{uri: String.t(), duration: number()}
-  @type tags :: Tags.Segment.t() | Tags.MediaInit.t() | Tags.Discontinuity.t()
-
   @spec new(Keyword.t()) :: t()
   def new(opts) do
     %__MODULE__{
@@ -39,7 +35,7 @@ defmodule HLX.MediaPlaylist do
   @spec add_init_header(t(), String.t()) :: t()
   def add_init_header(state, uri), do: %{state | temp_init: uri}
 
-  @spec add_segment(t(), segment()) :: {t(), Segment.t()}
+  @spec add_segment(t(), Segment.t()) :: {t(), Segment.t() | nil}
   def add_segment(%__MODULE__{} = state, segment) do
     state
     |> do_add_segment(segment)

@@ -10,7 +10,7 @@ defmodule HLX.Writer.Rendition do
           tracks: %{non_neg_integer() => ExMP4.Track.t()},
           muxer_mod: module(),
           muxer_state: any(),
-          track_durations: %{non_neg_integer() => non_neg_integer()},
+          track_durations: %{non_neg_integer() => {non_neg_integer(), non_neg_integer()}},
           lead_track: non_neg_integer() | nil,
           target_duration: non_neg_integer(),
           hls_tag: Stream.t() | Media.t() | nil
@@ -28,7 +28,7 @@ defmodule HLX.Writer.Rendition do
     :hls_tag
   ]
 
-  @spec new(String.t(), [ExMP4.Track.t()], Keyword.t()) :: t()
+  @spec new(String.t(), [ExMP4.Track.t()], keyword()) :: t()
   def new(name, tracks, opts) do
     target_duration = Keyword.get(opts, :target_duration, 2_000)
     muxer_state = CMAF.init(tracks)
@@ -119,10 +119,11 @@ defmodule HLX.Writer.Rendition do
   @spec bandwidth(t()) :: {non_neg_integer(), non_neg_integer()}
   def bandwidth(%{playlist: playlist}), do: HLX.MediaPlaylist.bandwidth(playlist)
 
-  @spec to_hls_tag(t(), list(), list()) :: struct() | nil
-  def to_hls_tag(state, max_bandwidths \\ [], avg_bandwidths \\ [])
+  @spec to_hls_tag(t(), {list(), list()}) :: struct() | nil
+  @spec to_hls_tag(t()) :: struct() | nil
+  def to_hls_tag(state, bandwidths \\ {[], []})
 
-  def to_hls_tag(%{hls_tag: %Stream{} = stream} = state, max_bandwidths, avg_bandwidths) do
+  def to_hls_tag(%{hls_tag: %Stream{} = stream} = state, {max_bandwidths, avg_bandwidths}) do
     {avg_band, max_band} = HLX.MediaPlaylist.bandwidth(state.playlist)
 
     %{
@@ -132,7 +133,7 @@ defmodule HLX.Writer.Rendition do
     }
   end
 
-  def to_hls_tag(%{hls_tag: tag}, _max, _avg), do: tag
+  def to_hls_tag(%{hls_tag: tag}, {_max, _avg}), do: tag
 
   defp init_track_durations(tracks, target_duration) do
     Map.new(tracks, fn track ->

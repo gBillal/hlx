@@ -19,7 +19,7 @@ defmodule HLX.Writer do
   @opaque t :: %__MODULE__{
             type: :master | :media,
             variants: %{String.t() => HLX.Writer.Rendition.t()},
-            lead_variant: String.t(),
+            lead_variant: String.t() | nil,
             max_segments: non_neg_integer()
           }
 
@@ -62,12 +62,15 @@ defmodule HLX.Writer do
       [type: :rendition, target_duration: 2000, max_segments: writer.max_segments] ++
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
+    init_uri = Path.join(name, "init.mp4")
+
     {init_data, variant} =
       name
       |> Rendition.new([opts[:track]], variant_opts)
-      |> Rendition.init_header("#{name}_init.mp4")
+      |> Rendition.init_header(init_uri)
 
-    :ok = File.write!("#{name}_init.mp4", init_data)
+    :ok = File.mkdir(name)
+    :ok = File.write!(init_uri, init_data)
 
     {:ok, %{writer | variants: Map.put(writer.variants, name, variant)}}
   end
@@ -98,10 +101,12 @@ defmodule HLX.Writer do
       max_segments: writer.max_segments
     ]
 
+    init_uri = Path.join(name, "init.mp4")
+
     {init_data, variant} =
       name
       |> Rendition.new(options[:tracks], rendition_options)
-      |> Rendition.init_header("#{name}_init.mp4")
+      |> Rendition.init_header(init_uri)
 
     lead_variant =
       cond do
@@ -110,7 +115,8 @@ defmodule HLX.Writer do
         true -> nil
       end
 
-    :ok = File.write!("#{name}_init.mp4", init_data)
+    :ok = File.mkdir(name)
+    :ok = File.write!(init_uri, init_data)
 
     writer = %{
       writer
@@ -134,7 +140,7 @@ defmodule HLX.Writer do
       if (writer.lead_variant == nil or lead_variant? or variant.lead_track != nil) and flush? do
         variant =
           variant
-          |> flush_and_write(variant_or_rendition)
+          |> flush_and_write()
           |> Rendition.push_sample(sample)
 
         {variant, true}
@@ -147,7 +153,7 @@ defmodule HLX.Writer do
     variants =
       if flush? and lead_variant? do
         Map.new(variants, fn {name, variant} ->
-          variant = if variant.lead_track, do: variant, else: flush_and_write(variant, name)
+          variant = if variant.lead_track, do: variant, else: flush_and_write(variant)
           {name, variant}
         end)
       else
@@ -166,11 +172,13 @@ defmodule HLX.Writer do
     %{writer | variants: variants}
   end
 
-  defp flush_and_write(variant, name) do
-    uri = "#{name}_#{Rendition.segment_count(variant)}.m4s"
+  defp flush_and_write(variant) do
+    uri = Path.join(variant.name, generate_segment_name(Rendition.segment_count(variant)))
     {data, variant} = Rendition.flush(variant, uri)
+
     File.write!(uri, data)
-    File.write!("#{name}.m3u8", HLX.MediaPlaylist.serialize(variant.playlist))
+    File.write!("#{variant.name}.m3u8", HLX.MediaPlaylist.serialize(variant.playlist))
+
     variant
   end
 
@@ -192,7 +200,7 @@ defmodule HLX.Writer do
           end)
           |> Enum.unzip()
 
-        Rendition.to_hls_tag(variant, max_bitrates, avg_bitrates)
+        Rendition.to_hls_tag(variant, {max_bitrates, avg_bitrates})
       end)
 
     payload =
@@ -216,6 +224,8 @@ defmodule HLX.Writer do
         |> Map.take(group_ids)
     end
   end
+
+  defp generate_segment_name(segment_count), do: "segment_#{segment_count}.m4s"
 
   defimpl Inspect, for: HLX.Writer do
     def inspect(writer, _opts) do

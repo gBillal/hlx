@@ -6,7 +6,7 @@ defmodule HLX.Segment do
   @type t :: %__MODULE__{
           uri: String.t(),
           size: non_neg_integer(),
-          duration: float(),
+          duration: number(),
           timestamp: DateTime.t() | nil,
           media_init: String.t() | nil,
           discontinuity?: boolean()
