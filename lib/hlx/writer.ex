@@ -69,7 +69,7 @@ defmodule HLX.Writer do
       |> Rendition.new([opts[:track]], variant_opts)
       |> Rendition.init_header(init_uri)
 
-    :ok = File.mkdir(name)
+    :ok = File.mkdir_p(name)
     :ok = File.write!(init_uri, init_data)
 
     {:ok, %{writer | variants: Map.put(writer.variants, name, variant)}}
@@ -115,7 +115,7 @@ defmodule HLX.Writer do
         true -> nil
       end
 
-    :ok = File.mkdir(name)
+    :ok = File.mkdir_p(name)
     :ok = File.write!(init_uri, init_data)
 
     writer = %{
@@ -174,10 +174,15 @@ defmodule HLX.Writer do
 
   defp flush_and_write(variant) do
     uri = Path.join(variant.name, generate_segment_name(Rendition.segment_count(variant)))
-    {data, variant} = Rendition.flush(variant, uri)
+    {data, discarded_segment, variant} = Rendition.flush(variant, uri)
 
     File.write!(uri, data)
     File.write!("#{variant.name}.m3u8", HLX.MediaPlaylist.serialize(variant.playlist))
+
+    if discarded_segment do
+      if discarded_segment.media_init, do: File.rm(discarded_segment.media_init)
+      File.rm(discarded_segment.uri)
+    end
 
     variant
   end
@@ -227,7 +232,7 @@ defmodule HLX.Writer do
 
   defp generate_segment_name(segment_count), do: "segment_#{segment_count}.m4s"
 
-  defimpl Inspect, for: HLX.Writer do
+  defimpl Inspect do
     def inspect(writer, _opts) do
       "#HLX.Writer<type: #{writer.type}, variants: #{map_size(writer.variants)}, " <>
         "lead_variant: #{writer.lead_variant}, max_segments: #{writer.max_segments}>"

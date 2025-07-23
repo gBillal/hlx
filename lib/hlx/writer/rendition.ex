@@ -81,25 +81,26 @@ defmodule HLX.Writer.Rendition do
       duration >= target_duration
   end
 
-  @spec flush(t(), String.t()) :: {binary(), t()}
+  @spec flush(t(), String.t()) :: {binary(), HLX.Segment.t() | nil, t()}
   def flush(rendition, segment_uri) do
     {data, muxer_state} = rendition.muxer_mod.flush_segment(rendition.muxer_state)
     seg_duration = segment_duration(rendition)
 
-    {playlist, _discarded} =
+    {playlist, discarded} =
       HLX.MediaPlaylist.add_segment(
         rendition.playlist,
         HLX.Segment.new(segment_uri, size: IO.iodata_length(data), duration: seg_duration)
       )
 
-    {data,
-     %{
-       rendition
-       | muxer_state: muxer_state,
-         playlist: playlist,
-         track_durations:
-           init_track_durations(Map.values(rendition.tracks), rendition.target_duration)
-     }}
+    rendition = %{
+      rendition
+      | muxer_state: muxer_state,
+        playlist: playlist,
+        track_durations:
+          init_track_durations(Map.values(rendition.tracks), rendition.target_duration)
+    }
+
+    {data, discarded, rendition}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]
