@@ -5,6 +5,8 @@ defmodule HLX.Writer do
 
   alias HLX.Writer.Rendition
 
+  @type mode :: :live | :vod
+  @type segment_type :: :mpeg_ts | :fmp4
   @type tracks :: [ExMP4.Track.t()]
   @type rendition_opts :: [
           {:type, :audio}
@@ -15,27 +17,38 @@ defmodule HLX.Writer do
         ]
 
   @type variant_opts :: [{:tracks, [ExMP4.Track.t()]} | {:audio, String.t()}]
+  @type new_opts :: [
+          {:type, :master | :media}
+          | {:mode, mode()}
+          | {:segment_type, segment_type()}
+          | {:max_segments, non_neg_integer()}
+        ]
 
   @opaque t :: %__MODULE__{
             type: :master | :media,
+            mode: mode(),
+            segment_type: segment_type(),
             variants: %{String.t() => HLX.Writer.Rendition.t()},
             lead_variant: String.t() | nil,
             max_segments: non_neg_integer()
           }
 
-  defstruct [:variants, :lead_variant, :max_segments, type: :media]
+  defstruct [:type, :mode, :segment_type, :variants, :lead_variant, :max_segments]
 
   @doc """
   Creates a new HLS writer.
+
+  The following options can be provided:
+    * `type` - The type of the playlist, either `:master` or `:media`. Defaults to `:media`.
+    * `mode` - The mode of the playlist, either `:live` or `:vod`. Defaults to `:live`.
+    * `segment_type` - The type of segments to write, either `:mpeg_ts` or `:fmp4`. Defaults to `:fmp4`.
+    * `max_segments` - The maximum number of segments to keep in the playlist, ignore on `vod` mode. Defaults to 0 (no limit).
   """
   @spec new(Keyword.t()) :: {:ok, t()}
   def new(options) do
-    {:ok,
-     %__MODULE__{
-       variants: %{},
-       type: options[:type] || :media,
-       max_segments: options[:max_segments] || 0
-     }}
+    with {:ok, options} <- validate_writer_opts(options) do
+      {:ok, struct!(%__MODULE__{variants: %{}}, options)}
+    end
   end
 
   @doc """
@@ -58,21 +71,17 @@ defmodule HLX.Writer do
 
   def add_rendition(writer, name, opts) do
     # Validate options
-    variant_opts =
-      [type: :rendition, target_duration: 2000, max_segments: writer.max_segments] ++
+    rendition_opts =
+      [
+        type: :rendition,
+        target_duration: 2000,
+        segment_type: writer.segment_type,
+        max_segments: writer.max_segments
+      ] ++
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
-    init_uri = Path.join(name, "init.mp4")
-
-    {init_data, variant} =
-      name
-      |> Rendition.new([opts[:track]], variant_opts)
-      |> Rendition.init_header(init_uri)
-
-    :ok = File.mkdir_p(name)
-    :ok = File.write!(init_uri, init_data)
-
-    {:ok, %{writer | variants: Map.put(writer.variants, name, variant)}}
+    rendition = do_add_rendition(name, [opts[:track]], rendition_opts)
+    {:ok, %{writer | variants: Map.put(writer.variants, name, rendition)}}
   end
 
   @doc """
@@ -98,29 +107,22 @@ defmodule HLX.Writer do
     rendition_options = [
       target_duration: 2000,
       audio: options[:audio],
+      segment_type: writer.segment_type,
       max_segments: writer.max_segments
     ]
 
-    init_uri = Path.join(name, "init.mp4")
-
-    {init_data, variant} =
-      name
-      |> Rendition.new(options[:tracks], rendition_options)
-      |> Rendition.init_header(init_uri)
+    rendition = do_add_rendition(name, options[:tracks], rendition_options)
 
     lead_variant =
       cond do
         not is_nil(writer.lead_variant) -> writer.lead_variant
-        not is_nil(variant.lead_track) -> name
+        not is_nil(rendition.lead_track) -> name
         true -> nil
       end
 
-    :ok = File.mkdir_p(name)
-    :ok = File.write!(init_uri, init_data)
-
     writer = %{
       writer
-      | variants: Map.put(writer.variants, name, variant),
+      | variants: Map.put(writer.variants, name, rendition),
         lead_variant: lead_variant
     }
 
@@ -172,8 +174,24 @@ defmodule HLX.Writer do
     %{writer | variants: variants}
   end
 
+  defp do_add_rendition(name, tracks, options) do
+    :ok = File.mkdir_p(name)
+    init_uri = Path.join(name, "init.mp4")
+
+    {init_data, rendition} =
+      name
+      |> Rendition.new(tracks, options)
+      |> Rendition.init_header(init_uri)
+
+    if init_data != <<>> do
+      :ok = File.write!(init_uri, init_data)
+    end
+
+    rendition
+  end
+
   defp flush_and_write(variant) do
-    uri = Path.join(variant.name, generate_segment_name(Rendition.segment_count(variant)))
+    uri = Path.join(variant.name, Rendition.generate_segment_name(variant))
     {data, discarded_segment, variant} = Rendition.flush(variant, uri)
 
     File.write!(uri, data)
@@ -230,7 +248,37 @@ defmodule HLX.Writer do
     end
   end
 
-  defp generate_segment_name(segment_count), do: "segment_#{segment_count}.m4s"
+  defp validate_writer_opts(options) do
+    defaults = [type: :media, mode: :live, segment_type: :fmp4, max_segments: 0]
+
+    with {:ok, validated_options} <- Keyword.validate(options, defaults),
+         :ok <- do_validate_writer_option(validated_options) do
+      {:ok, validated_options}
+    end
+  end
+
+  defp do_validate_writer_option([]), do: :ok
+
+  defp do_validate_writer_option([{:type, type} | rest]) when type in [:media, :master] do
+    do_validate_writer_option(rest)
+  end
+
+  defp do_validate_writer_option([{:mode, mode} | rest]) when mode in [:vod, :live] do
+    do_validate_writer_option(rest)
+  end
+
+  defp do_validate_writer_option([{:segment_type, type} | rest]) when type in [:mpeg_ts, :fmp4] do
+    do_validate_writer_option(rest)
+  end
+
+  defp do_validate_writer_option([{:max_segments, max_segments} | rest])
+       when max_segments == 0 or max_segments >= 5 do
+    do_validate_writer_option(rest)
+  end
+
+  defp do_validate_writer_option([{key, value} | _rest]) do
+    {:error, "Invalid value for #{to_string(key)}: #{inspect(value)}"}
+  end
 
   defimpl Inspect do
     def inspect(writer, _opts) do

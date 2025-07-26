@@ -11,7 +11,7 @@ defmodule HLX.Muxer do
 
   @callback push(sample :: ExMP4.Sample.t(), state()) :: state()
 
-  @callback flush_segment(state()) :: {binary(), state()}
+  @callback flush_segment(state()) :: {iodata(), state()}
 
   @optional_callbacks get_init_header: 1
 end

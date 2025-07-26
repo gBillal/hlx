@@ -2,10 +2,10 @@ defmodule HLX.Writer.Rendition do
   @moduledoc false
 
   alias ExM3U8.Tags.{Stream, Media}
-  alias HLX.Muxer.CMAF
+  alias HLX.Muxer.{CMAF, TS}
 
   @type t :: %__MODULE__{
-          name: String.t(),
+          name: binary(),
           playlist: HLX.MediaPlaylist.t(),
           tracks: %{non_neg_integer() => ExMP4.Track.t()},
           muxer_mod: module(),
@@ -28,10 +28,15 @@ defmodule HLX.Writer.Rendition do
     :hls_tag
   ]
 
-  @spec new(String.t(), [ExMP4.Track.t()], keyword()) :: t()
+  @spec new(binary(), [ExMP4.Track.t()], keyword()) :: t()
   def new(name, tracks, opts) do
     target_duration = Keyword.get(opts, :target_duration, 2_000)
-    muxer_state = CMAF.init(tracks)
+
+    {muxer_mod, muxer_state} =
+      case opts[:segment_type] do
+        :mpeg_ts -> {TS, TS.init(tracks)}
+        :fmp4 -> {CMAF, CMAF.init(tracks)}
+      end
 
     lead_track =
       Enum.find_value(tracks, fn
@@ -45,16 +50,18 @@ defmodule HLX.Writer.Rendition do
       name: name,
       playlist: HLX.MediaPlaylist.new(opts),
       tracks: tracks,
-      muxer_mod: CMAF,
+      muxer_mod: muxer_mod,
       muxer_state: muxer_state,
       track_durations: init_track_durations(Map.values(tracks), target_duration),
       lead_track: lead_track,
-      target_duration: Keyword.get(opts, :target_duration, 2_000),
+      target_duration: target_duration,
       hls_tag: hls_tag(name, opts)
     }
   end
 
-  @spec init_header(t(), String.t()) :: {binary(), t()}
+  @spec init_header(t(), binary()) :: {binary(), t()}
+  def init_header(%{muxer_mod: TS} = rendition, _uri), do: {<<>>, rendition}
+
   def init_header(rendition, init_uri) do
     init_header = rendition.muxer_mod.get_init_header(rendition.muxer_state)
     playlist = HLX.MediaPlaylist.add_init_header(rendition.playlist, init_uri)
@@ -114,11 +121,19 @@ defmodule HLX.Writer.Rendition do
   def group_id(%{hls_tag: %Media{group_id: group_id}}), do: group_id
   def group_id(_rendition), do: nil
 
-  @spec segment_count(t()) :: non_neg_integer()
-  def segment_count(%{playlist: playlist}), do: HLX.MediaPlaylist.segment_count(playlist)
-
   @spec bandwidth(t()) :: {non_neg_integer(), non_neg_integer()}
   def bandwidth(%{playlist: playlist}), do: HLX.MediaPlaylist.bandwidth(playlist)
+
+  @spec generate_segment_name(t()) :: binary()
+  def generate_segment_name(rendition) do
+    extension =
+      case rendition.muxer_mod do
+        TS -> "ts"
+        CMAF -> "m4s"
+      end
+
+    "segment_#{HLX.MediaPlaylist.segment_count(rendition.playlist)}.#{extension}"
+  end
 
   @spec to_hls_tag(t(), {list(), list()}) :: struct() | nil
   @spec to_hls_tag(t()) :: struct() | nil

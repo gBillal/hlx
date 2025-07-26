@@ -120,10 +120,18 @@ defmodule HLX.MediaPlaylist do
     discontinuity_number =
       state.discontinuity_number + if oldest_segment.discontinuity?, do: 1, else: 0
 
-    oldest_segment =
-      if is_nil(oldest_segment.media_init),
-        do: %{oldest_segment | media_init: discarded_segment.media_init, discontinuity?: false},
-        else: %{oldest_segment | discontinuity?: false}
+    {discarded_segment, oldest_segment} =
+      if is_nil(oldest_segment.media_init) do
+        oldest_segment = %{
+          oldest_segment
+          | media_init: discarded_segment.media_init,
+            discontinuity?: false
+        }
+
+        {%{discarded_segment | media_init: nil}, oldest_segment}
+      else
+        {discarded_segment, %{oldest_segment | discontinuity?: false}}
+      end
 
     {%{
        state
