@@ -73,7 +73,6 @@ defmodule HLX.Muxer.TS do
   def flush_segment(state) do
     state.packets
     |> Enum.reverse()
-    |> List.flatten()
     |> Marshaler.marshal()
     |> then(&{&1, %{state | packets: Enum.reverse(state.psi)}})
   end
