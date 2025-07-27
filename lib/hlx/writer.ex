@@ -166,11 +166,15 @@ defmodule HLX.Writer do
 
     {variants, writer} =
       if flush? and lead_variant? do
-        variants
-        |> Enum.filter(fn {_name, variant} -> is_nil(variant.lead_track) end)
-        |> Enum.map_reduce(writer, fn {name, variant}, writer ->
-          {writer, variant} = flush_and_write(writer, variant)
-          {{name, variant}, writer}
+        Enum.map_reduce(variants, writer, fn {name, variant}, writer ->
+          case variant.lead_track do
+            nil ->
+              {{name, variant}, writer}
+
+            _ ->
+              {writer, variant} = flush_and_write(writer, variant)
+              {{name, variant}, writer}
+          end
         end)
         |> then(fn {variants, writer} -> {Map.new(variants), writer} end)
       else
