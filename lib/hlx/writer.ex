@@ -27,13 +27,14 @@ defmodule HLX.Writer do
   @opaque t :: %__MODULE__{
             type: :master | :media,
             mode: mode(),
+            version: non_neg_integer(),
             segment_type: segment_type(),
             variants: %{String.t() => HLX.Writer.Rendition.t()},
             lead_variant: String.t() | nil,
             max_segments: non_neg_integer()
           }
 
-  defstruct [:type, :mode, :segment_type, :variants, :lead_variant, :max_segments]
+  defstruct [:type, :mode, :segment_type, :version, :variants, :lead_variant, :max_segments]
 
   @doc """
   Creates a new HLS writer.
@@ -132,9 +133,9 @@ defmodule HLX.Writer do
   @doc """
   Writes a sample to the specified variant or rendition.
   """
-  @spec write_sample(t(), String.t() | nil, ExMP4.Sample.t()) :: t()
-  def write_sample(writer, variant_or_rendition \\ nil, sample) do
-    variant = writer.variants[variant_or_rendition]
+  @spec write_sample(t(), String.t(), ExMP4.Sample.t()) :: t()
+  def write_sample(writer, variant_or_rendition, sample) do
+    variant = Map.fetch!(writer.variants, variant_or_rendition)
     flush? = Rendition.flush?(variant, sample)
     lead_variant? = writer.lead_variant == variant_or_rendition
 
@@ -162,16 +163,25 @@ defmodule HLX.Writer do
         variants
       end
 
-    variants =
-      if flushed? and writer.type == :master do
-        variants = Map.put(variants, variant_or_rendition, variant)
-        serialize_master_playlist(variants)
-        variants
-      else
-        Map.put(variants, variant_or_rendition, variant)
-      end
+    writer = %{writer | variants: Map.put(variants, variant_or_rendition, variant)}
+    if flushed?, do: serialize_playlists(writer)
+    writer
+  end
 
-    %{writer | variants: variants}
+  @doc """
+  Closes the writer.
+
+  Closes the writer and flush any pending segments. if the `mode` is `vod` creates the final
+  playlists.
+  """
+  @spec close(t()) :: :ok
+  def close(writer) do
+    variants =
+      Map.new(writer.variants, fn {name, variant} ->
+        {name, flush_and_write(variant)}
+      end)
+
+    serialize_playlists(%{writer | variants: variants}, true)
   end
 
   defp do_add_rendition(name, tracks, options) do
@@ -195,7 +205,6 @@ defmodule HLX.Writer do
     {data, discarded_segment, variant} = Rendition.flush(variant, uri)
 
     File.write!(uri, data)
-    File.write!("#{variant.name}.m3u8", HLX.MediaPlaylist.serialize(variant.playlist))
 
     if discarded_segment do
       if discarded_segment.media_init, do: File.rm(discarded_segment.media_init)
@@ -205,7 +214,31 @@ defmodule HLX.Writer do
     variant
   end
 
-  defp serialize_master_playlist(variants) do
+  defp serialize_playlists(%{variants: variants} = writer, end_list? \\ false) do
+    Enum.each(variants, fn {_key, variant} ->
+      playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.playlist)
+
+      playlist = %{
+        playlist
+        | info: %{
+            playlist.info
+            | version: writer.version,
+              playlist_type: if(writer.mode == :vod, do: :vod)
+          }
+      }
+
+      playlist = ExM3U8.serialize(playlist)
+      playlist = if end_list?, do: playlist <> "#EXT-X-ENDLIST\n", else: playlist
+
+      File.write!("#{variant.name}.m3u8", playlist)
+    end)
+
+    if writer.type == :master do
+      serialize_master_playlist(variants, writer.version)
+    end
+  end
+
+  defp serialize_master_playlist(variants, version) do
     variants = Map.values(variants)
 
     streams =
@@ -228,7 +261,7 @@ defmodule HLX.Writer do
 
     payload =
       ExM3U8.serialize(%ExM3U8.MultivariantPlaylist{
-        version: 7,
+        version: version,
         independent_segments: true,
         items: streams
       })
@@ -253,7 +286,14 @@ defmodule HLX.Writer do
 
     with {:ok, validated_options} <- Keyword.validate(options, defaults),
          :ok <- do_validate_writer_option(validated_options) do
-      {:ok, validated_options}
+      validated_options =
+        if validated_options[:mode] == :vod,
+          do: Keyword.replace!(validated_options, :max_segments, 0),
+          else: validated_options
+
+      version = if validated_options[:segment_type] == :mpeg_ts, do: 6, else: 7
+
+      {:ok, Keyword.put(validated_options, :version, version)}
     end
   end
 
