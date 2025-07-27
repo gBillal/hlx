@@ -5,10 +5,10 @@ defmodule HLX.Writer.BandwdithCalculatorTest do
 
   setup do
     segments = [
-      Segment.new("seg_1", size: 20_000, duration: 1.96),
-      Segment.new("seg_0", size: 17_000, duration: 2.02),
-      Segment.new("seg_2", size: 15_000, duration: 2.14),
-      Segment.new("seg_3", size: 16_000, duration: 2)
+      Segment.new(uri: "seg_1", size: 20_000, duration: 1.96),
+      Segment.new(uri: "seg_0", size: 17_000, duration: 2.02),
+      Segment.new(uri: "seg_2", size: 15_000, duration: 2.14),
+      Segment.new(uri: "seg_3", size: 16_000, duration: 2)
     ]
 
     %{segments: segments}
