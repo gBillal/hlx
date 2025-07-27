@@ -7,7 +7,7 @@ defmodule HLX.MediaPlaylist do
           segments: :queue.queue(Segment.t()),
           max_segments: non_neg_integer(),
           segment_count: non_neg_integer(),
-          temp_init: String.t(),
+          temp_init: String.t() | nil,
           sequence_number: non_neg_integer(),
           discontinuity_number: non_neg_integer()
         }
@@ -52,8 +52,8 @@ defmodule HLX.MediaPlaylist do
     state
   end
 
-  @spec serialize(t()) :: String.t()
-  def serialize(%__MODULE__{segments: segments} = state) do
+  @spec to_m3u8_playlist(t()) :: ExM3U8.MediaPlaylist.t()
+  def to_m3u8_playlist(%__MODULE__{segments: segments} = state) do
     {timeline, target_duration} =
       :queue.fold(
         fn segment, {acc, target_duration} ->
@@ -64,7 +64,7 @@ defmodule HLX.MediaPlaylist do
         segments
       )
 
-    playlist = %ExM3U8.MediaPlaylist{
+    %ExM3U8.MediaPlaylist{
       timeline: Enum.reverse(timeline) |> List.flatten(),
       info: %ExM3U8.MediaPlaylist.Info{
         version: 7,
@@ -74,8 +74,6 @@ defmodule HLX.MediaPlaylist do
         target_duration: target_duration
       }
     }
-
-    ExM3U8.serialize(playlist)
   end
 
   @spec bandwidth(t()) :: {non_neg_integer(), non_neg_integer()}
