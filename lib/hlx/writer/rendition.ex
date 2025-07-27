@@ -59,13 +59,16 @@ defmodule HLX.Writer.Rendition do
     }
   end
 
-  @spec init_header(t(), binary()) :: {binary(), t()}
-  def init_header(%{muxer_mod: TS} = rendition, _uri), do: {<<>>, rendition}
+  @spec init_header(t()) :: binary()
+  def init_header(%{muxer_mod: TS}), do: <<>>
 
-  def init_header(rendition, init_uri) do
-    init_header = rendition.muxer_mod.get_init_header(rendition.muxer_state)
-    playlist = HLX.MediaPlaylist.add_init_header(rendition.playlist, init_uri)
-    {init_header, %{rendition | playlist: playlist}}
+  def init_header(rendition) do
+    rendition.muxer_mod.get_init_header(rendition.muxer_state)
+  end
+
+  @spec add_init_header(t(), binary()) :: t()
+  def add_init_header(%{playlist: playlist} = rendition, uri) do
+    %{rendition | playlist: HLX.MediaPlaylist.add_init_header(playlist, uri)}
   end
 
   @spec push_sample(t(), ExMP4.Sample.t()) :: t()
@@ -88,26 +91,26 @@ defmodule HLX.Writer.Rendition do
       duration >= target_duration
   end
 
-  @spec flush(t(), String.t()) :: {binary(), HLX.Segment.t() | nil, t()}
-  def flush(rendition, segment_uri) do
+  @spec flush(t()) :: {{HLX.Segment.t(), binary()}, t()}
+  def flush(rendition) do
     {data, muxer_state} = rendition.muxer_mod.flush_segment(rendition.muxer_state)
-    seg_duration = segment_duration(rendition)
 
-    {playlist, discarded} =
-      HLX.MediaPlaylist.add_segment(
-        rendition.playlist,
-        HLX.Segment.new(segment_uri, size: IO.iodata_length(data), duration: seg_duration)
-      )
+    segment = HLX.Segment.new(size: IO.iodata_length(data), duration: segment_duration(rendition))
 
     rendition = %{
       rendition
       | muxer_state: muxer_state,
-        playlist: playlist,
         track_durations:
           init_track_durations(Map.values(rendition.tracks), rendition.target_duration)
     }
 
-    {data, discarded, rendition}
+    {{segment, data}, rendition}
+  end
+
+  @spec add_segment(t(), HLX.Segment.t()) :: {HLX.Segment.t() | nil, t()}
+  def add_segment(rendition, segment) do
+    {playlist, discarded} = HLX.MediaPlaylist.add_segment(rendition.playlist, segment)
+    {discarded, %{rendition | playlist: playlist}}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]

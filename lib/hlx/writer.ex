@@ -22,6 +22,7 @@ defmodule HLX.Writer do
           | {:mode, mode()}
           | {:segment_type, segment_type()}
           | {:max_segments, non_neg_integer()}
+          | {:storage, struct()}
         ]
 
   @opaque t :: %__MODULE__{
@@ -31,10 +32,22 @@ defmodule HLX.Writer do
             segment_type: segment_type(),
             variants: %{String.t() => HLX.Writer.Rendition.t()},
             lead_variant: String.t() | nil,
+            storage: struct(),
+            storage_mod: module(),
             max_segments: non_neg_integer()
           }
 
-  defstruct [:type, :mode, :segment_type, :version, :variants, :lead_variant, :max_segments]
+  defstruct [
+    :type,
+    :mode,
+    :segment_type,
+    :version,
+    :variants,
+    :lead_variant,
+    :storage_mod,
+    :storage,
+    :max_segments
+  ]
 
   @doc """
   Creates a new HLS writer.
@@ -44,11 +57,18 @@ defmodule HLX.Writer do
     * `mode` - The mode of the playlist, either `:live` or `:vod`. Defaults to `:live`.
     * `segment_type` - The type of segments to write, either `:mpeg_ts` or `:fmp4`. Defaults to `:fmp4`.
     * `max_segments` - The maximum number of segments to keep in the playlist, ignore on `vod` mode. Defaults to 0 (no limit).
+    * `storage` - Storage configuration, a struct implementing `HLX.Storage`
   """
   @spec new(Keyword.t()) :: {:ok, t()}
   def new(options) do
     with {:ok, options} <- validate_writer_opts(options) do
-      {:ok, struct!(%__MODULE__{variants: %{}}, options)}
+      {storage, options} = Keyword.pop!(options, :storage)
+
+      {:ok,
+       struct!(
+         %__MODULE__{variants: %{}, storage: storage, storage_mod: storage.__struct__},
+         options
+       )}
     end
   end
 
@@ -72,7 +92,7 @@ defmodule HLX.Writer do
 
   def add_rendition(writer, name, opts) do
     # Validate options
-    rendition_opts =
+    rendition_options =
       [
         type: :rendition,
         target_duration: 2000,
@@ -81,8 +101,8 @@ defmodule HLX.Writer do
       ] ++
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
-    rendition = do_add_rendition(name, [opts[:track]], rendition_opts)
-    {:ok, %{writer | variants: Map.put(writer.variants, name, rendition)}}
+    rendition = Rendition.new(name, opts[:track], rendition_options)
+    {:ok, maybe_store_init_header(writer, rendition)}
   end
 
   @doc """
@@ -112,7 +132,8 @@ defmodule HLX.Writer do
       max_segments: writer.max_segments
     ]
 
-    rendition = do_add_rendition(name, options[:tracks], rendition_options)
+    rendition = Rendition.new(name, options[:tracks], rendition_options)
+    writer = maybe_store_init_header(writer, rendition)
 
     lead_variant =
       cond do
@@ -121,13 +142,7 @@ defmodule HLX.Writer do
         true -> nil
       end
 
-    writer = %{
-      writer
-      | variants: Map.put(writer.variants, name, rendition),
-        lead_variant: lead_variant
-    }
-
-    {:ok, writer}
+    {:ok, %{writer | lead_variant: lead_variant}}
   end
 
   @doc """
@@ -139,28 +154,27 @@ defmodule HLX.Writer do
     flush? = Rendition.flush?(variant, sample)
     lead_variant? = writer.lead_variant == variant_or_rendition
 
-    {variant, flushed?} =
+    {writer, variant, flushed?} =
       if (writer.lead_variant == nil or lead_variant? or variant.lead_track != nil) and flush? do
-        variant =
-          variant
-          |> flush_and_write()
-          |> Rendition.push_sample(sample)
-
-        {variant, true}
+        {writer, variant} = flush_and_write(writer, variant)
+        {writer, Rendition.push_sample(variant, sample), true}
       else
-        {Rendition.push_sample(variant, sample), false}
+        {writer, Rendition.push_sample(variant, sample), false}
       end
 
     variants = Map.delete(writer.variants, variant_or_rendition)
 
-    variants =
+    {variants, writer} =
       if flush? and lead_variant? do
-        Map.new(variants, fn {name, variant} ->
-          variant = if variant.lead_track, do: variant, else: flush_and_write(variant)
-          {name, variant}
-        end)
-      else
         variants
+        |> Enum.filter(fn {_name, variant} -> is_nil(variant.lead_track) end)
+        |> Enum.map_reduce(writer, fn {name, variant}, writer ->
+          {writer, variant} = flush_and_write(writer, variant)
+          {{name, variant}, writer}
+        end)
+        |> then(fn {variants, writer} -> {Map.new(variants), writer} end)
+      else
+        {variants, writer}
       end
 
     writer = %{writer | variants: Map.put(variants, variant_or_rendition, variant)}
@@ -176,73 +190,84 @@ defmodule HLX.Writer do
   """
   @spec close(t()) :: :ok
   def close(writer) do
-    variants =
-      Map.new(writer.variants, fn {name, variant} ->
-        {name, flush_and_write(variant)}
+    {variants, writer} =
+      Enum.map_reduce(writer.variants, writer, fn {name, variant}, writer ->
+        {writer, variant} = flush_and_write(writer, variant)
+        {{name, variant}, writer}
       end)
 
-    serialize_playlists(%{writer | variants: variants}, true)
+    serialize_playlists(%{writer | variants: Map.new(variants)}, true)
+    :ok
   end
 
-  defp do_add_rendition(name, tracks, options) do
-    :ok = File.mkdir_p(name)
-    init_uri = Path.join(name, "init.mp4")
+  defp maybe_store_init_header(writer, rendition) do
+    case Rendition.init_header(rendition) do
+      <<>> ->
+        %{writer | variants: Map.put(writer.variants, rendition.name, rendition)}
 
-    {init_data, rendition} =
-      name
-      |> Rendition.new(tracks, options)
-      |> Rendition.init_header(init_uri)
+      data ->
+        {uri, storage} =
+          writer.storage_mod.store_init_header(rendition.name, "init.mp4", data, writer.storage)
 
-    if init_data != <<>> do
-      :ok = File.write!(init_uri, init_data)
+        rendition = Rendition.add_init_header(rendition, uri)
+
+        %{
+          writer
+          | storage: storage,
+            variants: Map.put(writer.variants, rendition.name, rendition)
+        }
     end
-
-    rendition
   end
 
-  defp flush_and_write(variant) do
-    uri = Path.join(variant.name, Rendition.generate_segment_name(variant))
-    {data, discarded_segment, variant} = Rendition.flush(variant, uri)
+  defp flush_and_write(writer, variant) do
+    resournce_name = Rendition.generate_segment_name(variant)
+    {{segment, data}, variant} = Rendition.flush(variant)
 
-    File.write!(uri, data)
+    {uri, storage} =
+      writer.storage_mod.store_segment(variant.name, resournce_name, data, writer.storage)
 
-    if discarded_segment do
-      if discarded_segment.media_init, do: File.rm(discarded_segment.media_init)
-      File.rm(discarded_segment.uri)
+    case Rendition.add_segment(variant, %{segment | uri: uri}) do
+      {nil, rendition} ->
+        {%{writer | storage: storage}, rendition}
+
+      {discarded_segment, rendition} ->
+        storage = writer.storage_mod.delete_segment(discarded_segment, storage)
+        {%{writer | storage: storage}, rendition}
     end
-
-    variant
   end
 
   defp serialize_playlists(%{variants: variants} = writer, end_list? \\ false) do
-    Enum.each(variants, fn {_key, variant} ->
-      playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.playlist)
+    {variants, storage} =
+      Enum.map_reduce(variants, writer.storage, fn {_key, variant}, storage ->
+        playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.playlist)
 
-      playlist = %{
-        playlist
-        | info: %{
-            playlist.info
-            | version: writer.version,
-              playlist_type: if(writer.mode == :vod, do: :vod)
-          }
-      }
+        playlist = %{
+          playlist
+          | info: %{
+              playlist.info
+              | version: writer.version,
+                playlist_type: if(writer.mode == :vod, do: :vod)
+            }
+        }
 
-      playlist = ExM3U8.serialize(playlist)
-      playlist = if end_list?, do: playlist <> "#EXT-X-ENDLIST\n", else: playlist
+        playlist = ExM3U8.serialize(playlist)
+        playlist = if end_list?, do: playlist <> "#EXT-X-ENDLIST\n", else: playlist
 
-      File.write!("#{variant.name}.m3u8", playlist)
-    end)
+        {uri, storage} = writer.storage_mod.store_playlist(variant.name, playlist, storage)
+        {{uri, variant}, storage}
+      end)
 
     if writer.type == :master do
-      serialize_master_playlist(variants, writer.version)
+      storage = serialize_master_playlist(writer, variants)
+      %{writer | storage: storage}
+    else
+      %{writer | storage: storage}
     end
   end
 
-  defp serialize_master_playlist(variants, version) do
-    variants = Map.values(variants)
-
+  defp serialize_master_playlist(writer, variants) do
     streams =
-      Enum.map(variants, fn variant ->
+      Enum.map(variants, fn {uri, variant} ->
         renditions = get_referenced_renditions(variant, variants)
 
         {avg_bitrates, max_bitrates} =
@@ -256,17 +281,17 @@ defmodule HLX.Writer do
           end)
           |> Enum.unzip()
 
-        Rendition.to_hls_tag(variant, {max_bitrates, avg_bitrates})
+        %{Rendition.to_hls_tag(variant, {max_bitrates, avg_bitrates}) | uri: uri}
       end)
 
     payload =
       ExM3U8.serialize(%ExM3U8.MultivariantPlaylist{
-        version: version,
+        version: writer.version,
         independent_segments: true,
         items: streams
       })
 
-    File.write!("master.m3u8", payload)
+    writer.storage_mod.store_master_playlist(payload, writer.storage)
   end
 
   defp get_referenced_renditions(rendition, renditions) do
@@ -282,7 +307,7 @@ defmodule HLX.Writer do
   end
 
   defp validate_writer_opts(options) do
-    defaults = [type: :media, mode: :live, segment_type: :fmp4, max_segments: 0]
+    defaults = [type: :media, mode: :live, segment_type: :fmp4, max_segments: 0, storage: nil]
 
     with {:ok, validated_options} <- Keyword.validate(options, defaults),
          :ok <- do_validate_writer_option(validated_options) do
@@ -313,6 +338,10 @@ defmodule HLX.Writer do
 
   defp do_validate_writer_option([{:max_segments, max_segments} | rest])
        when max_segments == 0 or max_segments >= 5 do
+    do_validate_writer_option(rest)
+  end
+
+  defp do_validate_writer_option([{:storage, storage} | rest]) when is_struct(storage) do
     do_validate_writer_option(rest)
   end
 

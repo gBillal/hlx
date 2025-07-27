@@ -14,9 +14,9 @@ defmodule HLX.Segment do
 
   defstruct [:uri, :size, :duration, :timestamp, :media_init, discontinuity?: false]
 
-  @spec new(String.t(), Keyword.t()) :: t()
-  def new(uri, opts) do
-    struct!(%__MODULE__{uri: uri}, opts)
+  @spec new(Keyword.t()) :: t()
+  def new(opts) do
+    struct!(__MODULE__, opts)
   end
 
   @spec bitrate(t()) :: non_neg_integer()
