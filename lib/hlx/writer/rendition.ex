@@ -59,12 +59,12 @@ defmodule HLX.Writer.Rendition do
     }
   end
 
-  @spec save_init_header(t(), tuple()) :: {t(), any()}
+  @spec save_init_header(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
   def save_init_header(%{muxer_mod: TS} = rendition, storage), do: {rendition, storage}
 
-  def save_init_header(rendition, {storage_mod, storage}) do
+  def save_init_header(rendition, storage) do
     data = rendition.muxer_mod.get_init_header(rendition.muxer_state)
-    {uri, storage} = storage_mod.store_init_header(rendition.name, "init.mp4", data, storage)
+    {uri, storage} = HLX.Storage.store_init_header(rendition.name, "init.mp4", data, storage)
 
     rendition = %{
       rendition
@@ -94,11 +94,11 @@ defmodule HLX.Writer.Rendition do
       duration >= target_duration
   end
 
-  @spec flush(t(), tuple()) :: {t(), storage :: any()}
-  def flush(rendition, {storage_mod, storage}) do
+  @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
+  def flush(rendition, storage) do
     name = generate_segment_name(rendition)
     {data, muxer_state} = rendition.muxer_mod.flush_segment(rendition.muxer_state)
-    {uri, storage} = storage_mod.store_segment(rendition.name, name, data, storage)
+    {uri, storage} = HLX.Storage.store_segment(rendition.name, name, data, storage)
 
     segment =
       HLX.Segment.new(
@@ -113,7 +113,7 @@ defmodule HLX.Writer.Rendition do
           {playlist, storage}
 
         {playlist, discarded} ->
-          {playlist, storage_mod.delete_segment(discarded, storage)}
+          {playlist, HLX.Storage.delete_segment(rendition.name, discarded, storage)}
       end
 
     rendition = %{

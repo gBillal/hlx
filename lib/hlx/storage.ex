@@ -10,11 +10,6 @@ defmodule HLX.Storage do
   @type payload :: iodata()
 
   @doc """
-  Callback to initialize the storage backend.
-  """
-  @callback init(any()) :: {:ok, state()} | {:error, any()}
-
-  @doc """
   Callback invoked to store the master playlist.
   """
   @callback store_master_playlist(payload(), state()) :: state()
@@ -44,4 +39,48 @@ defmodule HLX.Storage do
   @callback delete_segment(playlist_name(), HLX.Segment.t(), state()) :: state()
 
   @optional_callbacks store_init_header: 4
+
+  @opaque t :: %__MODULE__{
+            mod: module(),
+            state: state()
+          }
+
+  defstruct [:mod, :state]
+
+  @doc false
+  @spec new(struct()) :: t
+  def new(%struct{} = state) do
+    %__MODULE__{mod: struct, state: state}
+  end
+
+  @doc false
+  def store_master_playlist(payload, storage) do
+    %{storage | state: storage.mod.store_master_playlist(payload, storage.state)}
+  end
+
+  @doc false
+  def store_playlist(playlist_name, payload, storage) do
+    {uri, state} = storage.mod.store_playlist(playlist_name, payload, storage.state)
+    {uri, %{storage | state: state}}
+  end
+
+  @doc false
+  def store_init_header(playlist_name, resource_name, payload, storage) do
+    {uri, state} =
+      storage.mod.store_init_header(playlist_name, resource_name, payload, storage.state)
+
+    {uri, %{storage | state: state}}
+  end
+
+  @doc false
+  def store_segment(playlist_name, resource_name, payload, storage) do
+    {uri, state} = storage.mod.store_segment(playlist_name, resource_name, payload, storage.state)
+    {uri, %{storage | state: state}}
+  end
+
+  @doc false
+  def delete_segment(playlist_name, segment, storage) do
+    new_state = storage.mod.delete_segment(playlist_name, segment, storage.state)
+    %{storage | state: new_state}
+  end
 end

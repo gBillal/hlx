@@ -9,13 +9,6 @@ defmodule HLX.Storage.File do
   defstruct [:dir]
 
   @impl true
-  def init(options) do
-    with :ok <- File.mkdir_p(options[:dir]) do
-      {:ok, %__MODULE__{dir: options[:dir]}}
-    end
-  end
-
-  @impl true
   def store_master_playlist(payload, state) do
     File.write!(path(state, "master.m3u8"), payload)
     state

@@ -32,8 +32,7 @@ defmodule HLX.Writer do
             segment_type: segment_type(),
             variants: %{String.t() => HLX.Writer.Rendition.t()},
             lead_variant: String.t() | nil,
-            storage: struct(),
-            storage_mod: module(),
+            storage: HLX.Storage.t(),
             max_segments: non_neg_integer()
           }
 
@@ -44,7 +43,6 @@ defmodule HLX.Writer do
     :version,
     :variants,
     :lead_variant,
-    :storage_mod,
     :storage,
     :max_segments
   ]
@@ -63,12 +61,7 @@ defmodule HLX.Writer do
   def new(options) do
     with {:ok, options} <- validate_writer_opts(options) do
       {storage, options} = Keyword.pop!(options, :storage)
-
-      {:ok,
-       struct!(
-         %__MODULE__{variants: %{}, storage: storage, storage_mod: storage.__struct__},
-         options
-       )}
+      {:ok, struct!(%__MODULE__{variants: %{}, storage: HLX.Storage.new(storage)}, options)}
     end
   end
 
@@ -205,14 +198,12 @@ defmodule HLX.Writer do
   end
 
   defp save_init_header(writer, rendition) do
-    {rendition, storage} =
-      Rendition.save_init_header(rendition, {writer.storage_mod, writer.storage})
-
+    {rendition, storage} = Rendition.save_init_header(rendition, writer.storage)
     %{writer | storage: storage, variants: Map.put(writer.variants, rendition.name, rendition)}
   end
 
   defp flush_and_write(writer, variant) do
-    {variant, storage} = Rendition.flush(variant, {writer.storage_mod, writer.storage})
+    {variant, storage} = Rendition.flush(variant, writer.storage)
     {%{writer | storage: storage}, variant}
   end
 
@@ -237,7 +228,7 @@ defmodule HLX.Writer do
         playlist = ExM3U8.serialize(playlist)
         playlist = if end_list?, do: playlist <> "#EXT-X-ENDLIST\n", else: playlist
 
-        {uri, storage} = writer.storage_mod.store_playlist(variant.name, playlist, storage)
+        {uri, storage} = HLX.Storage.store_playlist(variant.name, playlist, storage)
         {{uri, variant}, storage}
       end)
 
@@ -275,7 +266,7 @@ defmodule HLX.Writer do
         items: streams
       })
 
-    writer.storage_mod.store_master_playlist(payload, writer.storage)
+    HLX.Storage.store_master_playlist(payload, writer.storage)
   end
 
   defp get_referenced_renditions(rendition, renditions) do
