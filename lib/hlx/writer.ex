@@ -101,8 +101,8 @@ defmodule HLX.Writer do
       ] ++
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
-    rendition = Rendition.new(name, opts[:track], rendition_options)
-    {:ok, maybe_store_init_header(writer, rendition)}
+    rendition = Rendition.new(name, [opts[:track]], rendition_options)
+    {:ok, save_init_header(writer, rendition)}
   end
 
   @doc """
@@ -133,7 +133,7 @@ defmodule HLX.Writer do
     ]
 
     rendition = Rendition.new(name, options[:tracks], rendition_options)
-    writer = maybe_store_init_header(writer, rendition)
+    writer = save_init_header(writer, rendition)
 
     lead_variant =
       cond do
@@ -169,10 +169,10 @@ defmodule HLX.Writer do
         Enum.map_reduce(variants, writer, fn {name, variant}, writer ->
           case variant.lead_track do
             nil ->
+              {writer, variant} = flush_and_write(writer, variant)
               {{name, variant}, writer}
 
             _ ->
-              {writer, variant} = flush_and_write(writer, variant)
               {{name, variant}, writer}
           end
         end)
@@ -204,43 +204,23 @@ defmodule HLX.Writer do
     :ok
   end
 
-  defp maybe_store_init_header(writer, rendition) do
-    case Rendition.init_header(rendition) do
-      <<>> ->
-        %{writer | variants: Map.put(writer.variants, rendition.name, rendition)}
+  defp save_init_header(writer, rendition) do
+    {rendition, storage} =
+      Rendition.save_init_header(rendition, {writer.storage_mod, writer.storage})
 
-      data ->
-        {uri, storage} =
-          writer.storage_mod.store_init_header(rendition.name, "init.mp4", data, writer.storage)
-
-        rendition = Rendition.add_init_header(rendition, uri)
-
-        %{
-          writer
-          | storage: storage,
-            variants: Map.put(writer.variants, rendition.name, rendition)
-        }
-    end
+    %{writer | storage: storage, variants: Map.put(writer.variants, rendition.name, rendition)}
   end
 
   defp flush_and_write(writer, variant) do
-    resournce_name = Rendition.generate_segment_name(variant)
-    {{segment, data}, variant} = Rendition.flush(variant)
-
-    {uri, storage} =
-      writer.storage_mod.store_segment(variant.name, resournce_name, data, writer.storage)
-
-    case Rendition.add_segment(variant, %{segment | uri: uri}) do
-      {nil, rendition} ->
-        {%{writer | storage: storage}, rendition}
-
-      {discarded_segment, rendition} ->
-        storage = writer.storage_mod.delete_segment(discarded_segment, storage)
-        {%{writer | storage: storage}, rendition}
-    end
+    {variant, storage} = Rendition.flush(variant, {writer.storage_mod, writer.storage})
+    {%{writer | storage: storage}, variant}
   end
 
-  defp serialize_playlists(%{variants: variants} = writer, end_list? \\ false) do
+  defp serialize_playlists(writer, end_list? \\ false)
+
+  defp serialize_playlists(%{mode: :vod} = writer, false), do: writer
+
+  defp serialize_playlists(%{variants: variants} = writer, end_list?) do
     {variants, storage} =
       Enum.map_reduce(variants, writer.storage, fn {_key, variant}, storage ->
         playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.playlist)
