@@ -1,10 +1,12 @@
 defmodule HLX.Writer.Rendition do
   @moduledoc false
 
+  alias __MODULE__.Config
   alias ExM3U8.Tags.{Stream, Media}
   alias HLX.Muxer.{CMAF, TS}
 
   @type t :: %__MODULE__{
+          type: :rendition | :variant | nil,
           name: binary(),
           playlist: HLX.MediaPlaylist.t(),
           tracks: %{non_neg_integer() => ExMP4.Track.t()},
@@ -13,10 +15,11 @@ defmodule HLX.Writer.Rendition do
           track_durations: %{non_neg_integer() => {non_neg_integer(), non_neg_integer()}},
           lead_track: non_neg_integer() | nil,
           target_duration: non_neg_integer(),
-          hls_tag: Stream.t() | Media.t() | nil
+          config: Config.t()
         }
 
   defstruct [
+    :type,
     :name,
     :playlist,
     :tracks,
@@ -25,7 +28,7 @@ defmodule HLX.Writer.Rendition do
     :track_durations,
     :lead_track,
     :target_duration,
-    :hls_tag
+    :config
   ]
 
   @spec new(binary(), [ExMP4.Track.t()], keyword()) :: t()
@@ -46,7 +49,18 @@ defmodule HLX.Writer.Rendition do
 
     tracks = Map.new(tracks, &{&1.id, &1})
 
+    config = %Config{
+      name: name,
+      audio: opts[:audio],
+      auto_select?: opts[:auto_select],
+      default?: opts[:default],
+      group_id: opts[:group_id],
+      language: opts[:language],
+      subtitles: opts[:subtitles]
+    }
+
     %__MODULE__{
+      type: opts[:type],
       name: name,
       playlist: HLX.MediaPlaylist.new(opts),
       tracks: tracks,
@@ -55,7 +69,7 @@ defmodule HLX.Writer.Rendition do
       track_durations: init_track_durations(Map.values(tracks), target_duration),
       lead_track: lead_track,
       target_duration: target_duration,
-      hls_tag: hls_tag(name, opts)
+      config: config
     }
   end
 
@@ -152,21 +166,21 @@ defmodule HLX.Writer.Rendition do
     "segment_#{HLX.MediaPlaylist.segment_count(rendition.playlist)}.#{extension}"
   end
 
-  @spec to_hls_tag(t(), {list(), list()}) :: struct() | nil
-  @spec to_hls_tag(t()) :: struct() | nil
+  @spec to_hls_tag(t(), {list(), list()}) :: struct()
+  @spec to_hls_tag(t()) :: struct()
   def to_hls_tag(state, bandwidths \\ {[], []})
 
-  def to_hls_tag(%{hls_tag: %Stream{} = stream} = state, {max_bandwidths, avg_bandwidths}) do
+  def to_hls_tag(%{type: :rendition, config: config}, {_max, _avg}), do: Config.to_media(config)
+
+  def to_hls_tag(state, {max_bandwidths, avg_bandwidths}) do
     {avg_band, max_band} = HLX.MediaPlaylist.bandwidth(state.playlist)
 
     %{
-      stream
+      Config.to_stream(state.config)
       | bandwidth: max_band + Enum.sum(max_bandwidths),
         average_bandwidth: avg_band + Enum.sum(avg_bandwidths)
     }
   end
-
-  def to_hls_tag(%{hls_tag: tag}, {_max, _avg}), do: tag
 
   defp init_track_durations(tracks, target_duration) do
     Map.new(tracks, fn track ->
@@ -186,29 +200,5 @@ defmodule HLX.Writer.Rendition do
     duration = rendition.track_durations[track_id] |> elem(0)
     timescale = rendition.tracks[track_id].timescale
     duration / timescale
-  end
-
-  defp hls_tag(name, opts) do
-    case opts[:type] do
-      :rendition ->
-        %Media{
-          name: name,
-          uri: "#{name}.m3u8",
-          type: :audio,
-          group_id: opts[:group_id],
-          default?: opts[:default] == true,
-          language: opts[:language],
-          auto_select?: opts[:auto_select] == true
-        }
-
-      _rendition ->
-        %Stream{
-          uri: "#{name}.m3u8",
-          bandwidth: 0,
-          audio: opts[:audio],
-          subtitles: opts[:subtitles],
-          codecs: ""
-        }
-    end
   end
 end

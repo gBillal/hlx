@@ -73,12 +73,14 @@ defmodule HLX.Storage do
   end
 
   @doc false
+  @spec store_segment(playlist_name(), resource_name(), payload(), t()) :: {uri(), t()}
   def store_segment(playlist_name, resource_name, payload, storage) do
     {uri, state} = storage.mod.store_segment(playlist_name, resource_name, payload, storage.state)
     {uri, %{storage | state: state}}
   end
 
   @doc false
+  @spec delete_segment(playlist_name(), HLX.Segment.t(), t()) :: t()
   def delete_segment(playlist_name, segment, storage) do
     new_state = storage.mod.delete_segment(playlist_name, segment, storage.state)
     %{storage | state: new_state}
