@@ -10,7 +10,7 @@ defmodule HLX.Writer do
   @type tracks :: [ExMP4.Track.t()]
   @type rendition_opts :: [
           {:type, :audio}
-          | {:track, ExMP4.Track.t()}
+          | {:track, HLX.Track.t()}
           | {:group_id, String.t()}
           | {:default, boolean()}
           | {:auto_select, boolean()}
@@ -30,10 +30,10 @@ defmodule HLX.Writer do
             mode: mode(),
             version: non_neg_integer(),
             segment_type: segment_type(),
-            variants: %{String.t() => HLX.Writer.Rendition.t()},
-            lead_variant: String.t() | nil,
             storage: HLX.Storage.t(),
-            max_segments: non_neg_integer()
+            max_segments: non_neg_integer(),
+            lead_variant: String.t() | nil,
+            variants: %{String.t() => HLX.Writer.Rendition.t()}
           }
 
   defstruct [
@@ -41,10 +41,10 @@ defmodule HLX.Writer do
     :mode,
     :segment_type,
     :version,
-    :variants,
-    :lead_variant,
     :storage,
-    :max_segments
+    :max_segments,
+    :lead_variant,
+    :variants
   ]
 
   @doc """
@@ -95,7 +95,7 @@ defmodule HLX.Writer do
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
     rendition = Rendition.new(name, [opts[:track]], rendition_options)
-    {:ok, save_init_header(writer, rendition)}
+    {:ok, maybe_save_init_header(writer, rendition)}
   end
 
   @doc """
@@ -126,7 +126,7 @@ defmodule HLX.Writer do
     ]
 
     rendition = Rendition.new(name, options[:tracks], rendition_options)
-    writer = save_init_header(writer, rendition)
+    writer = maybe_save_init_header(writer, rendition)
 
     lead_variant =
       cond do
@@ -144,39 +144,13 @@ defmodule HLX.Writer do
   @spec write_sample(t(), String.t(), ExMP4.Sample.t()) :: t()
   def write_sample(writer, variant_or_rendition, sample) do
     variant = Map.fetch!(writer.variants, variant_or_rendition)
-    flush? = Rendition.flush?(variant, sample)
-    lead_variant? = writer.lead_variant == variant_or_rendition
 
-    {writer, variant, flushed?} =
-      if (writer.lead_variant == nil or lead_variant? or variant.lead_track != nil) and flush? do
-        {writer, variant} = flush_and_write(writer, variant)
-        {writer, Rendition.push_sample(variant, sample), true}
-      else
-        {writer, Rendition.push_sample(variant, sample), false}
-      end
-
-    variants = Map.delete(writer.variants, variant_or_rendition)
-
-    {variants, writer} =
-      if flush? and lead_variant? do
-        Enum.map_reduce(variants, writer, fn {name, variant}, writer ->
-          case variant.lead_track do
-            nil ->
-              {writer, variant} = flush_and_write(writer, variant)
-              {{name, variant}, writer}
-
-            _ ->
-              {{name, variant}, writer}
-          end
-        end)
-        |> then(fn {variants, writer} -> {Map.new(variants), writer} end)
-      else
-        {variants, writer}
-      end
-
-    writer = %{writer | variants: Map.put(variants, variant_or_rendition, variant)}
-    if flushed?, do: serialize_playlists(writer)
-    writer
+    if Rendition.ready?(variant) do
+      do_push_sample(writer, variant, sample)
+    else
+      rendition = Rendition.push_sample(variant, sample)
+      maybe_save_init_header(writer, rendition)
+    end
   end
 
   @doc """
@@ -197,9 +171,49 @@ defmodule HLX.Writer do
     :ok
   end
 
-  defp save_init_header(writer, rendition) do
-    {rendition, storage} = Rendition.save_init_header(rendition, writer.storage)
-    %{writer | storage: storage, variants: Map.put(writer.variants, rendition.name, rendition)}
+  defp do_push_sample(writer, variant, sample) do
+    flush? = Rendition.flush?(variant, sample)
+    lead_variant? = writer.lead_variant == variant.name
+
+    {writer, variant, flushed?} =
+      if (writer.lead_variant == nil or lead_variant? or variant.lead_track != nil) and flush? do
+        {writer, variant} = flush_and_write(writer, variant)
+        {writer, Rendition.push_sample(variant, sample), true}
+      else
+        {writer, Rendition.push_sample(variant, sample), false}
+      end
+
+    variants = Map.delete(writer.variants, variant.name)
+
+    {variants, writer} =
+      if flush? and lead_variant? do
+        Enum.map_reduce(variants, writer, fn {name, variant}, writer ->
+          case variant.lead_track do
+            nil ->
+              {writer, variant} = flush_and_write(writer, variant)
+              {{name, variant}, writer}
+
+            _ ->
+              {{name, variant}, writer}
+          end
+        end)
+        |> then(fn {variants, writer} -> {Map.new(variants), writer} end)
+      else
+        {variants, writer}
+      end
+
+    writer = %{writer | variants: Map.put(variants, variant.name, variant)}
+    if flushed? and writer.mode == :live, do: serialize_playlists(writer)
+    writer
+  end
+
+  defp maybe_save_init_header(writer, rendition) do
+    if Rendition.ready?(rendition) do
+      {rendition, storage} = Rendition.save_init_header(rendition, writer.storage)
+      %{writer | storage: storage, variants: Map.put(writer.variants, rendition.name, rendition)}
+    else
+      %{writer | variants: Map.put(writer.variants, rendition.name, rendition)}
+    end
   end
 
   defp flush_and_write(writer, variant) do

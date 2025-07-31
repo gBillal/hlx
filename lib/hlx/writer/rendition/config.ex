@@ -9,7 +9,7 @@ defmodule HLX.Writer.Rendition.Config do
           auto_select?: boolean(),
           audio: String.t(),
           subtitles: String.t(),
-          codecs: String.t()
+          codecs: String.t() | nil
         }
 
   defstruct [:name, :group_id, :default?, :language, :auto_select?, :audio, :subtitles, :codecs]

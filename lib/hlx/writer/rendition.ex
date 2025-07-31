@@ -1,6 +1,8 @@
 defmodule HLX.Writer.Rendition do
   @moduledoc false
 
+  import HLX.SampleProcessor
+
   alias __MODULE__.Config
   alias ExM3U8.Tags.{Stream, Media}
   alias HLX.Muxer.{CMAF, TS}
@@ -35,19 +37,15 @@ defmodule HLX.Writer.Rendition do
   def new(name, tracks, opts) do
     target_duration = Keyword.get(opts, :target_duration, 2_000)
 
-    {muxer_mod, muxer_state} =
-      case opts[:segment_type] do
-        :mpeg_ts -> {TS, TS.init(tracks)}
-        :fmp4 -> {CMAF, CMAF.init(tracks)}
-      end
+    ready? = Enum.all?(tracks, &(&1.priv_data != nil))
+    muxer_mod = if opts[:segment_type] == :mpeg_ts, do: TS, else: CMAF
+    muxer_state = if ready?, do: muxer_mod.init(tracks)
 
     lead_track =
       Enum.find_value(tracks, fn
         %{type: :video, id: id} -> id
         _other -> nil
       end)
-
-    tracks = Map.new(tracks, &{&1.id, &1})
 
     config = %Config{
       name: name,
@@ -63,15 +61,19 @@ defmodule HLX.Writer.Rendition do
       type: opts[:type],
       name: name,
       playlist: HLX.MediaPlaylist.new(opts),
-      tracks: tracks,
+      tracks: Map.new(tracks, &{&1.id, &1}),
       muxer_mod: muxer_mod,
       muxer_state: muxer_state,
-      track_durations: init_track_durations(Map.values(tracks), target_duration),
+      track_durations: init_track_durations(tracks, target_duration),
       lead_track: lead_track,
       target_duration: target_duration,
       config: config
     }
   end
+
+  # check if all the tracks have initialization data
+  @spec ready?(t()) :: boolean()
+  def ready?(%{muxer_state: state}), do: not is_nil(state)
 
   @spec save_init_header(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
   def save_init_header(%{muxer_mod: TS} = rendition, storage), do: {rendition, storage}
@@ -89,8 +91,23 @@ defmodule HLX.Writer.Rendition do
   end
 
   @spec push_sample(t(), ExMP4.Sample.t()) :: t()
+  def push_sample(%{muxer_state: nil} = rendition, sample) do
+    track = rendition.tracks[sample.track_id]
+    {track, _payload} = process_sample(track, sample.payload, container(rendition.muxer_mod))
+    tracks = Map.put(rendition.tracks, track.id, track)
+
+    if all_tracks_ready?(tracks) do
+      muxer_state = rendition.muxer_mod.init(Map.values(tracks))
+      push_sample(%{rendition | muxer_state: muxer_state, tracks: tracks}, sample)
+    else
+      %{rendition | tracks: tracks}
+    end
+  end
+
   def push_sample(rendition, sample) do
-    muxer_state = rendition.muxer_mod.push(sample, rendition.muxer_state)
+    track = rendition.tracks[sample.track_id]
+    {_track, payload} = process_sample(track, sample.payload, container(rendition.muxer_mod))
+    muxer_state = rendition.muxer_mod.push(%{sample | payload: payload}, rendition.muxer_state)
 
     track_durations =
       Map.update!(rendition.track_durations, sample.track_id, fn {duration, target_duration} ->
@@ -115,11 +132,11 @@ defmodule HLX.Writer.Rendition do
     {uri, storage} = HLX.Storage.store_segment(rendition.name, name, data, storage)
 
     segment =
-      HLX.Segment.new(
+      %HLX.Segment{
         uri: uri,
         size: IO.iodata_length(data),
         duration: segment_duration(rendition)
-      )
+      }
 
     {playlist, storage} =
       case HLX.MediaPlaylist.add_segment(rendition.playlist, segment) do
@@ -200,5 +217,14 @@ defmodule HLX.Writer.Rendition do
     duration = rendition.track_durations[track_id] |> elem(0)
     timescale = rendition.tracks[track_id].timescale
     duration / timescale
+  end
+
+  defp container(TS), do: :mpeg_ts
+  defp container(CMAF), do: :fmp4
+
+  defp all_tracks_ready?(tracks) do
+    tracks
+    |> Map.values()
+    |> Enum.all?(&(&1.priv_data != nil))
   end
 end

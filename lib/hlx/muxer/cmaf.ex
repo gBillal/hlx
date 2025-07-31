@@ -7,7 +7,7 @@ defmodule HLX.Muxer.CMAF do
 
   alias ExMP4.{Box, Track}
 
-  @styp %Box.Styp{major_brand: "iso5", minor_version: 512, compatible_brands: ["iso6", "mp41"]}
+  @ftyp %Box.Ftyp{major_brand: "iso5", minor_version: 512, compatible_brands: ["iso6", "mp41"]}
   @mdat_header_size 8
 
   @type t :: %__MODULE__{
@@ -35,7 +35,7 @@ defmodule HLX.Muxer.CMAF do
 
   @impl true
   def get_init_header(state) do
-    Box.serialize([@styp, state.header])
+    Box.serialize([@ftyp, state.header])
   end
 
   @impl true
@@ -92,17 +92,42 @@ defmodule HLX.Muxer.CMAF do
     }
   end
 
-  defp new_track(track) do
-    %{
-      track
-      | duration: 0,
-        sample_count: 0,
-        sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
-        trex: %Box.Trex{
-          track_id: track.id,
-          default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
-        },
-        trafs: []
+  defp new_track(%{codec: :h264, priv_data: {sps, pps}} = track) do
+    parsed_sps = MediaCodecs.H264.NALU.SPS.parse(sps)
+
+    %ExMP4.Track{
+      id: track.id,
+      type: track.type,
+      media: track.codec,
+      timescale: track.timescale,
+      width: MediaCodecs.H264.NALU.SPS.width(parsed_sps),
+      height: MediaCodecs.H264.NALU.SPS.height(parsed_sps),
+      priv_data: ExMP4.Box.Avcc.new([sps], List.wrap(pps)),
+      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
+      trex: %Box.Trex{
+        track_id: track.id,
+        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
+      }
+    }
+  end
+
+  defp new_track(%{codec: codec} = track) when codec in [:hevc, :h265] do
+    {vps, sps, pps} = track.priv_data
+    parsed_sps = MediaCodecs.H265.NALU.SPS.parse(List.first(sps))
+
+    %ExMP4.Track{
+      id: track.id,
+      type: track.type,
+      media: :h265,
+      timescale: track.timescale,
+      width: MediaCodecs.H265.NALU.SPS.width(parsed_sps),
+      height: MediaCodecs.H265.NALU.SPS.height(parsed_sps),
+      priv_data: ExMP4.Box.Hvcc.new(vps, sps, List.wrap(pps)),
+      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
+      trex: %Box.Trex{
+        track_id: track.id,
+        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
+      }
     }
   end
 
