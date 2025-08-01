@@ -28,7 +28,7 @@ defmodule HLX.SampleProcessor do
           to_annexb(@h264_aud, sample.payload)
 
         true ->
-          to_annexb(@h264_aud, sample.payload)
+          to_annexb(sample.payload)
       end
 
     {track, %{sample | payload: payload, sync?: keyframe?}}
@@ -52,7 +52,7 @@ defmodule HLX.SampleProcessor do
           to_annexb(@h265_aud, sample.payload)
 
         true ->
-          to_annexb(@h265_aud, sample.payload)
+          to_annexb(sample.payload)
       end
 
     {track, %{sample | payload: payload, sync?: keyframe?}}
@@ -82,10 +82,15 @@ defmodule HLX.SampleProcessor do
 
   def process_sample(track, payload, _), do: {track, payload}
 
-  defp to_annexb(aud, nalus) when is_list(nalus) do
-    for nalu <- [aud | nalus], into: <<>>, do: <<1::32>> <> nalu
+  defp to_annexb(nalus) when is_list(nalus) do
+    nalus
+    |> Enum.map(&[<<1::32>>, &1])
+    |> IO.iodata_to_binary()
   end
 
+  defp to_annexb(payload), do: payload
+
+  defp to_annexb(aud, nalus) when is_list(nalus), do: to_annexb([aud | nalus])
   defp to_annexb(aud, payload), do: <<1::32>> <> aud <> payload
 
   defp adts?(<<0xFFF::12, _::bitstring>>), do: true
