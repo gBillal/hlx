@@ -22,7 +22,7 @@ defmodule HLX.Muxer.CMAF do
 
   @impl true
   def init(tracks) do
-    tracks = Map.new(tracks, &{&1.id, new_track(&1)})
+    tracks = Map.new(tracks, &{&1.id, HLX.Track.to_mp4_track(&1)})
 
     %__MODULE__{
       tracks: tracks,
@@ -88,45 +88,6 @@ defmodule HLX.Muxer.CMAF do
       trak: Enum.map(tracks, &Track.to_trak(&1, ExMP4.movie_timescale())),
       mvex: %Box.Mvex{
         trex: Enum.map(tracks, & &1.trex)
-      }
-    }
-  end
-
-  defp new_track(%{codec: :h264, priv_data: {sps, pps}} = track) do
-    parsed_sps = MediaCodecs.H264.NALU.SPS.parse(sps)
-
-    %ExMP4.Track{
-      id: track.id,
-      type: track.type,
-      media: track.codec,
-      timescale: track.timescale,
-      width: MediaCodecs.H264.NALU.SPS.width(parsed_sps),
-      height: MediaCodecs.H264.NALU.SPS.height(parsed_sps),
-      priv_data: ExMP4.Box.Avcc.new([sps], List.wrap(pps)),
-      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
-      trex: %Box.Trex{
-        track_id: track.id,
-        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
-      }
-    }
-  end
-
-  defp new_track(%{codec: codec} = track) when codec in [:hevc, :h265] do
-    {vps, sps, pps} = track.priv_data
-    parsed_sps = MediaCodecs.H265.NALU.SPS.parse(List.first(sps))
-
-    %ExMP4.Track{
-      id: track.id,
-      type: track.type,
-      media: :h265,
-      timescale: track.timescale,
-      width: MediaCodecs.H265.NALU.SPS.width(parsed_sps),
-      height: MediaCodecs.H265.NALU.SPS.height(parsed_sps),
-      priv_data: ExMP4.Box.Hvcc.new(vps, sps, List.wrap(pps)),
-      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
-      trex: %Box.Trex{
-        track_id: track.id,
-        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
       }
     }
   end

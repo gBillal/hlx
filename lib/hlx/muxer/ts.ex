@@ -108,27 +108,22 @@ defmodule HLX.Muxer.TS do
   defp generate(pes, pid, sync?, continuity_counter) do
     pes_data = Marshaler.marshal(pes)
     header_size = 8
+    pcr = if pid == 0x100, do: (pes.dts || pes.pts) * 300
 
-    chunks =
-      {0, @ts_payload_size - header_size}
-      |> chunk(byte_size(pes_data))
-      |> Enum.map(fn {offset, size} -> :binary.part(pes_data, offset, size) end)
-
-    first_packet =
-      Packet.new(hd(chunks),
-        pusi: true,
-        random_access_indicator: sync?,
-        pcr: pes.dts * 300,
+    {0, @ts_payload_size - header_size}
+    |> chunk(byte_size(pes_data))
+    |> Stream.with_index(continuity_counter)
+    |> Enum.map(fn {{offset, size}, index} ->
+      %Packet{
+        payload: binary_part(pes_data, offset, size),
         pid: pid,
-        continuity_counter: continuity_counter
-      )
-
-    tl(chunks)
-    |> Enum.with_index(continuity_counter + 1)
-    |> Enum.map(fn {chunk, index} ->
-      Packet.new(chunk, pid: pid, continuity_counter: rem(index, @max_counter))
+        continuity_counter: rem(index, @max_counter)
+      }
     end)
-    |> then(&[first_packet | &1])
+    |> then(fn [first | rest] ->
+      first = %{first | pusi: true, random_access_indicator: sync?, pcr: pcr}
+      [first | rest]
+    end)
   end
 
   defp chunk({offset, size}, remaining) when remaining <= size, do: [{offset, remaining}]

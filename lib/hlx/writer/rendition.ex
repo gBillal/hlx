@@ -11,7 +11,7 @@ defmodule HLX.Writer.Rendition do
           type: :rendition | :variant | nil,
           name: binary(),
           playlist: HLX.MediaPlaylist.t(),
-          tracks: %{non_neg_integer() => ExMP4.Track.t()},
+          tracks: %{non_neg_integer() => HLX.Track.t()},
           muxer_mod: module(),
           muxer_state: any(),
           track_durations: %{non_neg_integer() => {non_neg_integer(), non_neg_integer()}},
@@ -33,42 +33,52 @@ defmodule HLX.Writer.Rendition do
     :config
   ]
 
-  @spec new(binary(), [ExMP4.Track.t()], keyword()) :: t()
+  @spec new(binary(), [HLX.Track.t()], keyword()) :: {:ok, t()} | {:error, any()}
   def new(name, tracks, opts) do
     target_duration = Keyword.get(opts, :target_duration, 2_000)
 
-    ready? = Enum.all?(tracks, &(&1.priv_data != nil))
-    muxer_mod = if opts[:segment_type] == :mpeg_ts, do: TS, else: CMAF
-    muxer_state = if ready?, do: muxer_mod.init(tracks)
-
-    lead_track =
-      Enum.find_value(tracks, fn
-        %{type: :video, id: id} -> id
-        _other -> nil
+    validation =
+      Enum.reduce_while(tracks, {:ok, %{}}, fn track, {:ok, acc} ->
+        case HLX.Track.validate(track) do
+          {:ok, track} -> {:cont, {:ok, Map.put(acc, track.id, track)}}
+          error -> {:halt, error}
+        end
       end)
 
-    config = %Config{
-      name: name,
-      audio: opts[:audio],
-      auto_select?: opts[:auto_select],
-      default?: opts[:default],
-      group_id: opts[:group_id],
-      language: opts[:language],
-      subtitles: opts[:subtitles]
-    }
+    with {:ok, tracks} <- validation do
+      muxer_mod = if opts[:segment_type] == :mpeg_ts, do: TS, else: CMAF
+      muxer_state = if all_tracks_ready?(tracks), do: muxer_mod.init(Map.values(tracks))
 
-    %__MODULE__{
-      type: opts[:type],
-      name: name,
-      playlist: HLX.MediaPlaylist.new(opts),
-      tracks: Map.new(tracks, &{&1.id, &1}),
-      muxer_mod: muxer_mod,
-      muxer_state: muxer_state,
-      track_durations: init_track_durations(tracks, target_duration),
-      lead_track: lead_track,
-      target_duration: target_duration,
-      config: config
-    }
+      lead_track =
+        Enum.find_value(tracks, fn
+          %{type: :video, id: id} -> id
+          _other -> nil
+        end)
+
+      config = %Config{
+        name: name,
+        audio: opts[:audio],
+        auto_select?: opts[:auto_select],
+        default?: opts[:default],
+        group_id: opts[:group_id],
+        language: opts[:language],
+        subtitles: opts[:subtitles]
+      }
+
+      {:ok,
+       %__MODULE__{
+         type: opts[:type],
+         name: name,
+         playlist: HLX.MediaPlaylist.new(opts),
+         tracks: tracks,
+         muxer_mod: muxer_mod,
+         muxer_state: muxer_state,
+         track_durations: init_track_durations(tracks, target_duration),
+         lead_track: lead_track,
+         target_duration: target_duration,
+         config: config
+       }}
+    end
   end
 
   # check if all the tracks have initialization data
@@ -151,8 +161,7 @@ defmodule HLX.Writer.Rendition do
       rendition
       | muxer_state: muxer_state,
         playlist: playlist,
-        track_durations:
-          init_track_durations(Map.values(rendition.tracks), rendition.target_duration)
+        track_durations: init_track_durations(rendition.tracks, rendition.target_duration)
     }
 
     {rendition, storage}
@@ -200,8 +209,8 @@ defmodule HLX.Writer.Rendition do
   end
 
   defp init_track_durations(tracks, target_duration) do
-    Map.new(tracks, fn track ->
-      {track.id, {0, ExMP4.Helper.timescalify(target_duration, :millisecond, track.timescale)}}
+    Map.new(tracks, fn {id, track} ->
+      {id, {0, ExMP4.Helper.timescalify(target_duration, :millisecond, track.timescale)}}
     end)
   end
 

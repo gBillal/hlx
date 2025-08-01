@@ -94,8 +94,9 @@ defmodule HLX.Writer do
       ] ++
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
-    rendition = Rendition.new(name, [opts[:track]], rendition_options)
-    {:ok, maybe_save_init_header(writer, rendition)}
+    with {:ok, rendition} <- Rendition.new(name, [opts[:track]], rendition_options) do
+      {:ok, maybe_save_init_header(writer, rendition)}
+    end
   end
 
   @doc """
@@ -125,17 +126,18 @@ defmodule HLX.Writer do
       max_segments: writer.max_segments
     ]
 
-    rendition = Rendition.new(name, options[:tracks], rendition_options)
-    writer = maybe_save_init_header(writer, rendition)
+    with {:ok, rendition} <- Rendition.new(name, options[:tracks], rendition_options) do
+      writer = maybe_save_init_header(writer, rendition)
 
-    lead_variant =
-      cond do
-        not is_nil(writer.lead_variant) -> writer.lead_variant
-        not is_nil(rendition.lead_track) -> name
-        true -> nil
-      end
+      lead_variant =
+        cond do
+          not is_nil(writer.lead_variant) -> writer.lead_variant
+          not is_nil(rendition.lead_track) -> name
+          true -> nil
+        end
 
-    {:ok, %{writer | lead_variant: lead_variant}}
+      {:ok, %{writer | lead_variant: lead_variant}}
+    end
   end
 
   @doc """

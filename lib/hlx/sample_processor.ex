@@ -2,7 +2,7 @@ defmodule HLX.SampleProcessor do
   @moduledoc false
 
   alias HLX.Track
-  alias MediaCodecs.{H264, H265}
+  alias MediaCodecs.{H264, H265, MPEG4}
 
   @type container :: :mpeg_ts | :fmp4
 
@@ -52,6 +52,28 @@ defmodule HLX.SampleProcessor do
     end
   end
 
+  def process_sample(%{codec: :aac} = track, payload, container) do
+    cond do
+      container == :fmp4 and adts?(payload) ->
+        {:ok, %{frames: frames}, <<>>} = MPEG4.ADTS.parse(payload)
+        {track, frames}
+
+      container == :mpeg_ts and not adts?(payload) ->
+        adts = %MPEG4.ADTS{
+          audio_object_type: track.priv_data.object_type,
+          channels: track.priv_data.channels,
+          sampling_frequency: track.priv_data.sampling_frequency,
+          frames_count: 1,
+          frames: payload
+        }
+
+        {track, MPEG4.ADTS.serialize(adts)}
+
+      true ->
+        {track, payload}
+    end
+  end
+
   def process_sample(track, payload, _), do: {track, payload}
 
   defp to_annexb(aud, nalus) when is_list(nalus) do
@@ -59,4 +81,7 @@ defmodule HLX.SampleProcessor do
   end
 
   defp to_annexb(aud, payload), do: <<1::32>> <> aud <> payload
+
+  defp adts?(<<0xFFF::12, _::bitstring>>), do: true
+  defp adts?(_), do: false
 end
