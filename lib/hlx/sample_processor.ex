@@ -9,7 +9,7 @@ defmodule HLX.SampleProcessor do
   @h264_aud <<0x09, 0xF0>>
   @h265_aud <<0x46, 0x01, 0x60>>
 
-  @spec process_sample(Track.t(), HLX.Sample, container()) :: {Track.t(), HLX.Sample}
+  @spec process_sample(Track.t(), HLX.Sample.t(), container()) :: {Track.t(), HLX.Sample.t()}
   def process_sample(%{codec: :h264} = track, sample, container) do
     {{sps, pps}, nalus} = H264.pop_parameter_sets(sample.payload)
     keyframe? = Enum.any?(nalus, &H264.NALU.keyframe?/1)

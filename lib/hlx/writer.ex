@@ -111,7 +111,7 @@ defmodule HLX.Writer do
     * `tracks` - [Required] One or more tracks definitions, all the nedia are muxed in the same segment.
     * `audio` - Reference to a `group_id` of a rendition.
   """
-  @spec add_variant(t(), String.t(), variant_opts()) :: {:ok | t()} | {:error, any()}
+  @spec add_variant(t(), String.t(), variant_opts()) :: {:ok, t()} | {:error, any()}
   def add_variant(writer, _name, _options)
       when writer.type == :media and map_size(writer.variants) >= 1 do
     {:error, "Media playlist support only one variant"}
@@ -322,7 +322,7 @@ defmodule HLX.Writer do
   end
 
   defp do_validate_writer_option([{:max_segments, max_segments} | rest])
-       when max_segments == 0 or max_segments >= 5 do
+       when max_segments == 0 or max_segments >= 3 do
     do_validate_writer_option(rest)
   end
 

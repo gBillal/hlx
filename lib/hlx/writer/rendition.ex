@@ -13,7 +13,7 @@ defmodule HLX.Writer.Rendition do
           playlist: HLX.MediaPlaylist.t(),
           tracks: %{non_neg_integer() => HLX.Track.t()},
           muxer_mod: module(),
-          muxer_state: any(),
+          muxer_state: any() | nil,
           track_durations: %{non_neg_integer() => {non_neg_integer(), non_neg_integer()}},
           lead_track: non_neg_integer() | nil,
           target_duration: non_neg_integer(),
@@ -100,7 +100,8 @@ defmodule HLX.Writer.Rendition do
     {rendition, storage}
   end
 
-  @spec push_sample(t(), HLX.Sample.t(), HLX.Storage.t(), boolean()) :: t()
+  @spec push_sample(t(), HLX.Sample.t(), HLX.Storage.t(), boolean()) ::
+          {t(), HLX.Storage.t(), boolean()}
   def push_sample(%{muxer_state: nil} = rendition, sample, storage, end_segment?) do
     track = rendition.tracks[sample.track_id]
     {track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
@@ -120,6 +121,7 @@ defmodule HLX.Writer.Rendition do
     track_id = sample.track_id
     track = rendition.tracks[track_id]
 
+    sample = %{sample | dts: sample.dts || sample.pts}
     {_track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
 
     {duration, target_duration} = rendition.track_durations[track_id]
