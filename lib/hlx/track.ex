@@ -1,6 +1,18 @@
 defmodule HLX.Track do
   @moduledoc """
   Module describing a media track.
+
+  All the fields are required except for `priv_data`.
+
+  ## Private Data
+  `priv_data` contains codec specific initialization data. The format of the field is:
+    * `h264` - For H.264 it's a tuple of sps and a list of pps
+    * `h265` - For H.265 or HEVC it's a tuple of vps, sps and a list of pps.
+    * `aac` - For AAC it's a binary describing the audio specific configuration.
+
+  The `priv_data` is not mandatory if:
+    * H.264 samples have in-band parameter sets.
+    * H.265 samples have in-band parameter sets.
   """
 
   alias ExMP4.Box
@@ -26,6 +38,9 @@ defmodule HLX.Track do
   @spec new(keyword()) :: t()
   def new(opts), do: struct(__MODULE__, opts)
 
+  @doc """
+  Creates a new track from an `ex_mp4` track.
+  """
   @spec from(ExMP4.Track.t()) :: t()
   def from(%ExMP4.Track{} = track) do
     %__MODULE__{
@@ -37,6 +52,10 @@ defmodule HLX.Track do
     }
   end
 
+  @doc """
+  Converts a track to an `ex_mp4` track.
+  """
+  @spec to_mp4_track(t()) :: ExMP4.Track.t()
   def to_mp4_track(%{codec: :h264} = track) do
     {sps, pps} = track.priv_data
     parsed_sps = H264.NALU.SPS.parse(sps)
@@ -100,6 +119,7 @@ defmodule HLX.Track do
     }
   end
 
+  @doc false
   @spec validate(t()) :: {:ok, t()} | {:error, any()}
   def validate(%{codec: codec}) when codec not in @codecs do
     {:error, "Unsupported codec: #{inspect(codec)}"}

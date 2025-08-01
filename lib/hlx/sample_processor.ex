@@ -9,9 +9,9 @@ defmodule HLX.SampleProcessor do
   @h264_aud <<0x09, 0xF0>>
   @h265_aud <<0x46, 0x01, 0x60>>
 
-  @spec process_sample(Track.t(), iodata(), container()) :: {Track.t(), iodata()}
-  def process_sample(%{codec: :h264} = track, payload, container) do
-    {{sps, pps}, nalus} = H264.pop_parameter_sets(payload)
+  @spec process_sample(Track.t(), HLX.Sample, container()) :: {Track.t(), HLX.Sample}
+  def process_sample(%{codec: :h264} = track, sample, container) do
+    {{sps, pps}, nalus} = H264.pop_parameter_sets(sample.payload)
     keyframe? = Enum.any?(nalus, &H264.NALU.keyframe?/1)
 
     track =
@@ -19,20 +19,23 @@ defmodule HLX.SampleProcessor do
         do: %{track | priv_data: {List.first(sps), pps}},
         else: track
 
-    cond do
-      container == :fmp4 ->
-        {track, H264.annexb_to_elementary_stream(nalus)}
+    payload =
+      cond do
+        container == :fmp4 ->
+          H264.annexb_to_elementary_stream(nalus)
 
-      container == :mpeg_ts and H264.NALU.type(List.first(nalus)) != :aud ->
-        {track, to_annexb(@h264_aud, payload)}
+        container == :mpeg_ts and H264.NALU.type(List.first(nalus)) != :aud ->
+          to_annexb(@h264_aud, sample.payload)
 
-      true ->
-        {track, to_annexb(@h264_aud, payload)}
-    end
+        true ->
+          to_annexb(@h264_aud, sample.payload)
+      end
+
+    {track, %{sample | payload: payload, sync?: keyframe?}}
   end
 
-  def process_sample(%{codec: codec} = track, payload, container) when codec in [:h265, :hevc] do
-    {{vps, sps, pps}, nalus} = H265.pop_parameter_sets(payload)
+  def process_sample(%{codec: codec} = track, sample, container) when codec in [:h265, :hevc] do
+    {{vps, sps, pps}, nalus} = H265.pop_parameter_sets(sample.payload)
     keyframe? = Enum.any?(nalus, &H265.NALU.keyframe?/1)
 
     track =
@@ -40,37 +43,40 @@ defmodule HLX.SampleProcessor do
         do: %{track | priv_data: {List.first(vps), List.first(sps), pps}},
         else: track
 
-    cond do
-      container == :fmp4 ->
-        {track, H265.annexb_to_elementary_stream(nalus)}
+    payload =
+      cond do
+        container == :fmp4 ->
+          H265.annexb_to_elementary_stream(nalus)
 
-      container == :mpeg_ts and H265.NALU.type(List.first(nalus)) != :aud ->
-        {track, to_annexb(@h265_aud, payload)}
+        container == :mpeg_ts and H265.NALU.type(List.first(nalus)) != :aud ->
+          to_annexb(@h265_aud, sample.payload)
 
-      true ->
-        {track, to_annexb(@h265_aud, payload)}
-    end
+        true ->
+          to_annexb(@h265_aud, sample.payload)
+      end
+
+    {track, %{sample | payload: payload, sync?: keyframe?}}
   end
 
-  def process_sample(%{codec: :aac} = track, payload, container) do
+  def process_sample(%{codec: :aac} = track, sample, container) do
     cond do
-      container == :fmp4 and adts?(payload) ->
-        {:ok, %{frames: frames}, <<>>} = MPEG4.ADTS.parse(payload)
-        {track, frames}
+      container == :fmp4 and adts?(sample.payload) ->
+        {:ok, %{frames: frames}, <<>>} = MPEG4.ADTS.parse(sample.payload)
+        {track, %{sample | payload: frames, sync?: true}}
 
-      container == :mpeg_ts and not adts?(payload) ->
+      container == :mpeg_ts and not adts?(sample.payload) ->
         adts = %MPEG4.ADTS{
           audio_object_type: track.priv_data.object_type,
           channels: track.priv_data.channels,
           sampling_frequency: track.priv_data.sampling_frequency,
           frames_count: 1,
-          frames: payload
+          frames: sample.payload
         }
 
-        {track, MPEG4.ADTS.serialize(adts)}
+        {track, %{sample | payload: MPEG4.ADTS.serialize(adts), sync?: true}}
 
       true ->
-        {track, payload}
+        {track, %{sample | sync?: true}}
     end
   end
 

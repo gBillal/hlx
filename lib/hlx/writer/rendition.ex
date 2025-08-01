@@ -100,39 +100,48 @@ defmodule HLX.Writer.Rendition do
     {rendition, storage}
   end
 
-  @spec push_sample(t(), ExMP4.Sample.t()) :: t()
-  def push_sample(%{muxer_state: nil} = rendition, sample) do
+  @spec push_sample(t(), HLX.Sample.t(), HLX.Storage.t(), boolean()) :: t()
+  def push_sample(%{muxer_state: nil} = rendition, sample, storage, end_segment?) do
     track = rendition.tracks[sample.track_id]
-    {track, _payload} = process_sample(track, sample.payload, container(rendition.muxer_mod))
+    {track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
+
     tracks = Map.put(rendition.tracks, track.id, track)
 
     if all_tracks_ready?(tracks) do
       muxer_state = rendition.muxer_mod.init(Map.values(tracks))
-      push_sample(%{rendition | muxer_state: muxer_state, tracks: tracks}, sample)
+      rendition = %{rendition | muxer_state: muxer_state, tracks: tracks}
+      push_sample(rendition, sample, storage, end_segment?)
     else
-      %{rendition | tracks: tracks}
+      {%{rendition | tracks: tracks}, storage, false}
     end
   end
 
-  def push_sample(rendition, sample) do
-    track = rendition.tracks[sample.track_id]
-    {_track, payload} = process_sample(track, sample.payload, container(rendition.muxer_mod))
-    muxer_state = rendition.muxer_mod.push(%{sample | payload: payload}, rendition.muxer_state)
+  def push_sample(rendition, sample, storage, end_segment?) do
+    track_id = sample.track_id
+    track = rendition.tracks[track_id]
+
+    {_track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
+
+    {duration, target_duration} = rendition.track_durations[track_id]
+
+    flush? =
+      duration >= target_duration and end_segment? and
+        (is_nil(rendition.lead_track) or rendition.lead_track == sample.track_id) and sample.sync?
+
+    {rendition, storage} =
+      if flush?,
+        do: flush(rendition, storage),
+        else: {rendition, storage}
+
+    muxer_state = rendition.muxer_mod.push(sample, rendition.muxer_state)
 
     track_durations =
-      Map.update!(rendition.track_durations, sample.track_id, fn {duration, target_duration} ->
+      Map.update!(rendition.track_durations, track_id, fn {duration, target_duration} ->
         {duration + sample.duration, target_duration}
       end)
 
-    %{rendition | muxer_state: muxer_state, track_durations: track_durations}
-  end
-
-  @spec flush?(t(), ExMP4.Sample.t()) :: boolean()
-  def flush?(rendition, sample) do
-    {duration, target_duration} = rendition.track_durations[sample.track_id]
-
-    (is_nil(rendition.lead_track) or rendition.lead_track == sample.track_id) and sample.sync? and
-      duration >= target_duration
+    rendition = %{rendition | muxer_state: muxer_state, track_durations: track_durations}
+    {rendition, storage, flush?}
   end
 
   @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}

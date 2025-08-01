@@ -75,7 +75,7 @@ defmodule HLX.Muxer.CMAF do
         segments: new_segments(tracks)
     }
 
-    {segment_data, state}
+    {segment_data, %{state | seq_no: state.seq_no + 1}}
   end
 
   defp build_header(tracks) do
