@@ -7,7 +7,7 @@ defmodule HLX.Muxer.CMAF do
 
   alias ExMP4.{Box, Track}
 
-  @styp %Box.Styp{major_brand: "iso5", minor_version: 512, compatible_brands: ["iso6", "mp41"]}
+  @ftyp %Box.Ftyp{major_brand: "iso5", minor_version: 512, compatible_brands: ["iso6", "mp41"]}
   @mdat_header_size 8
 
   @type t :: %__MODULE__{
@@ -22,7 +22,7 @@ defmodule HLX.Muxer.CMAF do
 
   @impl true
   def init(tracks) do
-    tracks = Map.new(tracks, &{&1.id, new_track(&1)})
+    tracks = Map.new(tracks, &{&1.id, HLX.Track.to_mp4_track(&1)})
 
     %__MODULE__{
       tracks: tracks,
@@ -35,7 +35,7 @@ defmodule HLX.Muxer.CMAF do
 
   @impl true
   def get_init_header(state) do
-    Box.serialize([@styp, state.header])
+    Box.serialize([@ftyp, state.header])
   end
 
   @impl true
@@ -75,7 +75,7 @@ defmodule HLX.Muxer.CMAF do
         segments: new_segments(tracks)
     }
 
-    {segment_data, state}
+    {segment_data, %{state | seq_no: state.seq_no + 1}}
   end
 
   defp build_header(tracks) do
@@ -89,20 +89,6 @@ defmodule HLX.Muxer.CMAF do
       mvex: %Box.Mvex{
         trex: Enum.map(tracks, & &1.trex)
       }
-    }
-  end
-
-  defp new_track(track) do
-    %{
-      track
-      | duration: 0,
-        sample_count: 0,
-        sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
-        trex: %Box.Trex{
-          track_id: track.id,
-          default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
-        },
-        trafs: []
     }
   end
 

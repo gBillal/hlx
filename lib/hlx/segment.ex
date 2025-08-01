@@ -16,7 +16,7 @@ defmodule HLX.Segment do
 
   @spec new(Keyword.t()) :: t()
   def new(opts) do
-    struct!(__MODULE__, opts)
+    struct(__MODULE__, opts)
   end
 
   @spec bitrate(t()) :: non_neg_integer()

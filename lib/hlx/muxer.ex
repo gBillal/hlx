@@ -5,11 +5,11 @@ defmodule HLX.Muxer do
 
   @type state :: any()
 
-  @callback init([ExMP4.Track.t()]) :: state()
+  @callback init([HLX.Track.t()]) :: state()
 
   @callback get_init_header(state()) :: binary()
 
-  @callback push(sample :: ExMP4.Sample.t(), state()) :: state()
+  @callback push(sample :: HLX.Sample.t(), state()) :: state()
 
   @callback flush_segment(state()) :: {iodata(), state()}
 

@@ -11,8 +11,6 @@ defmodule HLX.Muxer.TS do
   @ts_clock 90_000
   @ts_payload_size 184
   @max_counter 16
-  @h264_aud <<0x01::32, 0x09, 0xF0>>
-  @h265_aud <<0x01::32, 0x46, 0x01, 0x60>>
 
   defstruct [:psi, :tracks, :track_to_stream, :packets, continuity_counter: 0]
 
@@ -28,7 +26,7 @@ defmodule HLX.Muxer.TS do
          %{
            timescale: track.timescale,
            pid: pid,
-           media: track.media,
+           media: track.codec,
            stream_type_id: stream_type_id(track),
            stream_id: stream_id(track.type)
          }}
@@ -54,7 +52,6 @@ defmodule HLX.Muxer.TS do
   @impl true
   def push(sample, state) do
     stream_info = Map.fetch!(state.track_to_stream, sample.track_id)
-    sample = maybe_add_aud(sample, stream_info.media)
 
     pes =
       MPEG.TS.PES.new(sample.payload,
@@ -99,55 +96,39 @@ defmodule HLX.Muxer.TS do
     )
   end
 
-  defp stream_type_id(%{media: :h264}), do: PMT.encode_stream_type(:H264)
-  defp stream_type_id(%{media: :h265}), do: PMT.encode_stream_type(:HEVC)
-  defp stream_type_id(%{media: :aac}), do: PMT.encode_stream_type(:AAC)
-  defp stream_type_id(%{media: media}), do: raise("Unsupported media: #{inspect(media)}")
+  defp stream_type_id(%{codec: :h264}), do: PMT.encode_stream_type(:H264)
+  defp stream_type_id(%{codec: :aac}), do: PMT.encode_stream_type(:AAC)
+  defp stream_type_id(%{codec: :h265}), do: PMT.encode_stream_type(:HEVC)
+  defp stream_type_id(%{codec: :hevc}), do: PMT.encode_stream_type(:HEVC)
+  defp stream_type_id(%{codec: media}), do: raise("Unsupported media: #{inspect(media)}")
 
   defp stream_id(:video), do: 0xE0
   defp stream_id(:audio), do: 0xC0
 
-  defp maybe_add_aud(sample, :h264) do
-    %{sample | payload: @h264_aud <> sample.payload}
-  end
-
-  defp maybe_add_aud(sample, :h265) do
-    %{sample | payload: @h265_aud <> sample.payload}
-  end
-
-  defp maybe_add_aud(sample, _media), do: sample
-
-  def generate(pes, pid, sync?, continuity_counter) do
+  defp generate(pes, pid, sync?, continuity_counter) do
+    pes_data = Marshaler.marshal(pes)
     header_size = 8
+    pcr = if pid == 0x100, do: (pes.dts || pes.pts) * 300
 
-    chunks = chunk_sample_payload(Marshaler.marshal(pes), @ts_payload_size - header_size)
-
-    first_packet =
-      Packet.new(hd(chunks),
-        pusi: true,
-        random_access_indicator: sync?,
-        pcr: pes.dts * 300,
+    {0, @ts_payload_size - header_size}
+    |> chunk(byte_size(pes_data))
+    |> Stream.with_index(continuity_counter)
+    |> Enum.map(fn {{offset, size}, index} ->
+      %Packet{
+        payload: binary_part(pes_data, offset, size),
         pid: pid,
-        continuity_counter: continuity_counter
-      )
-
-    tl(chunks)
-    |> Enum.with_index(continuity_counter + 1)
-    |> Enum.map(fn {chunk, index} ->
-      Packet.new(chunk, pid: pid, continuity_counter: rem(index, @max_counter))
+        continuity_counter: rem(index, @max_counter)
+      }
     end)
-    |> then(&[first_packet | &1])
+    |> then(fn [first | rest] ->
+      first = %{first | pusi: true, random_access_indicator: sync?, pcr: pcr}
+      [first | rest]
+    end)
   end
 
-  defp chunk_sample_payload(<<>>, _size), do: []
+  defp chunk({offset, size}, remaining) when remaining <= size, do: [{offset, remaining}]
 
-  defp chunk_sample_payload(payload, size) do
-    case payload do
-      <<part::binary-size(size), rest::binary>> ->
-        [part | chunk_sample_payload(rest, @ts_payload_size)]
-
-      last_chunk ->
-        [last_chunk]
-    end
+  defp chunk({offset, size}, remaining) do
+    [{offset, size} | chunk({offset + size, @ts_payload_size}, remaining - size)]
   end
 end
