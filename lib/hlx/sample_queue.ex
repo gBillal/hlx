@@ -1,0 +1,208 @@
+defmodule HLX.SampleQueue do
+  @moduledoc false
+
+  import ExMP4.Helper, only: [timescalify: 3]
+
+  @type track_id :: {String.t(), non_neg_integer()}
+  @type track :: %{
+          id: track_id(),
+          queue: Qex.t(),
+          queue_size: non_neg_integer(),
+          buffer?: boolean(),
+          timescale: non_neg_integer(),
+          duration: non_neg_integer()
+        }
+
+  @type t() :: %__MODULE__{
+          target_duration: non_neg_integer(),
+          lead_track: track_id() | nil,
+          tracks: %{track_id() => track()},
+          last_sample_timestamp: non_neg_integer()
+        }
+
+  defstruct lead_track: nil,
+            tracks: %{},
+            target_duration: 0,
+            last_sample_timestamp: 0
+
+  @spec new(non_neg_integer()) :: t()
+  def new(target_duration) do
+    %__MODULE__{target_duration: target_duration}
+  end
+
+  @spec track_ids(t()) :: [track_id()]
+  def track_ids(%{tracks: tracks}) do
+    tracks
+    |> Map.keys()
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq()
+  end
+
+  @spec add_track(t(), track_id(), boolean(), non_neg_integer()) :: t()
+  def add_track(sample_queue, id, lead?, timescale) do
+    track = %{
+      id: id,
+      queue: Qex.new(),
+      queue_size: 0,
+      buffer?: false,
+      timescale: timescale,
+      duration: 0
+    }
+
+    if lead? do
+      target_duration = timescalify(sample_queue.target_duration, :millisecond, timescale)
+
+      %{
+        sample_queue
+        | lead_track: id,
+          tracks: Map.put(sample_queue.tracks, id, track),
+          target_duration: target_duration
+      }
+    else
+      %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}
+    end
+  end
+
+  @spec push_sample(t(), track_id(), HLX.Sample.t()) :: {boolean(), list(), t()}
+  def push_sample(%{lead_track: nil} = sample_queue, id, sample) do
+    track = sample_queue.tracks[id]
+    target_duration = timescalify(sample_queue.target_duration, :millisecond, track.timescale)
+
+    if track.duration >= target_duration do
+      tracks = Map.update!(sample_queue.tracks, id, &%{&1 | duration: sample.duration})
+      {true, [{id, sample}], %{sample_queue | tracks: tracks}}
+    else
+      track = Map.update!(track, :duration, &(&1 + sample.duration))
+      {false, [{id, sample}], %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}}
+    end
+  end
+
+  def push_sample(%{lead_track: id} = sample_queue, id, sample) do
+    track = sample_queue.tracks[id]
+    new_segment? = sample.sync? and track.duration >= sample_queue.target_duration
+    should_buffer? = new_segment? and not flush?(sample_queue)
+
+    cond do
+      track.buffer? or should_buffer? ->
+        track = %{push(track, sample) | buffer?: true, duration: 0}
+        {false, [], %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}}
+
+      new_segment? ->
+        tracks = Map.put(sample_queue.tracks, id, %{track | duration: sample.duration})
+        {sample_queue, samples} = drain_queues(sample_queue)
+        {true, [{id, sample} | samples], %{sample_queue | tracks: tracks}}
+
+      true ->
+        tracks =
+          Map.put(sample_queue.tracks, id, %{track | duration: track.duration + sample.duration})
+
+        sample_queue = %{
+          sample_queue
+          | last_sample_timestamp: sample.dts,
+            tracks: tracks
+        }
+
+        {sample_queue, samples} = drain_queues(sample_queue)
+        {false, [{id, sample} | samples], sample_queue}
+    end
+  end
+
+  def push_sample(sample_queue, id, sample) do
+    track = sample_queue.tracks[id]
+    lead_track = sample_queue.tracks[sample_queue.lead_track]
+    sample_timestamp = timescalify(sample.dts, track.timescale, lead_track.timescale)
+
+    cond do
+      sample_timestamp <= sample_queue.last_sample_timestamp ->
+        {false, [{id, sample}], sample_queue}
+
+      lead_track.buffer? ->
+        track = push(track, sample)
+        sample_queue = %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}
+
+        if flush?(sample_queue) do
+          {sample_queue, lead_sample} = drain_lead_track(sample_queue)
+          {sample_queue, samples} = drain_queues(sample_queue)
+          {true, Enum.concat(lead_sample, samples), sample_queue}
+        else
+          {false, [], sample_queue}
+        end
+
+      true ->
+        track = push(track, sample)
+        {false, [], %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}}
+    end
+  end
+
+  defp push(track, sample, where \\ :back)
+
+  defp push(track, sample, :back) do
+    queue = Qex.push(track.queue, sample)
+    %{track | queue: queue, queue_size: track.queue_size + 1}
+  end
+
+  defp push(track, sample, :front) do
+    queue = Qex.push_front(track.queue, sample)
+    %{track | queue: queue, queue_size: track.queue_size + 1}
+  end
+
+  defp pop_sample(track) do
+    {sample, queue} = Qex.pop!(track.queue)
+    {sample, %{track | queue: queue, queue_size: track.queue_size - 1}}
+  end
+
+  defp flush?(sample_queue) do
+    Enum.all?(sample_queue.tracks, fn {id, track} ->
+      id == sample_queue.lead_track or track.queue_size > 0
+    end)
+  end
+
+  defp drain_lead_track(sample_queue) do
+    track = sample_queue.tracks[sample_queue.lead_track]
+    acc = {sample_queue.last_sample_timestamp, 0, []}
+
+    {{last_timestamp, duration, samples}, track} = drain(track, nil, acc)
+    track = %{track | buffer?: false, duration: duration}
+
+    {%{
+       sample_queue
+       | last_sample_timestamp: last_timestamp,
+         tracks: Map.put(sample_queue.tracks, sample_queue.lead_track, track)
+     }, samples}
+  end
+
+  defp drain_queues(sample_queue) do
+    lead_track = sample_queue.tracks[sample_queue.lead_track]
+
+    {samples, tracks} =
+      Enum.map_reduce(sample_queue.tracks, %{}, fn {id, track}, tracks ->
+        if id == sample_queue.lead_track do
+          {[], Map.put(tracks, id, track)}
+        else
+          timestamp =
+            timescalify(sample_queue.last_sample_timestamp, lead_track.timescale, track.timescale)
+
+          {{_, _, samples}, track} = drain(track, timestamp, {0, 0, []})
+          {samples, Map.put(tracks, id, track)}
+        end
+      end)
+
+    {%{sample_queue | tracks: tracks}, Enum.concat(samples)}
+  end
+
+  defp drain(%{queue_size: 0} = track, _timestamp, {last_timestamp, duration, samples}) do
+    {{last_timestamp, duration, Enum.reverse(samples)}, track}
+  end
+
+  defp drain(track, timestamp, {last_timestamp, duration, samples}) do
+    case pop_sample(track) do
+      {sample, track} when is_nil(timestamp) or sample.dts <= timestamp ->
+        acc = {sample.dts, duration + sample.duration, [{track.id, sample} | samples]}
+        drain(track, timestamp, acc)
+
+      {sample, track} ->
+        track = push(track, sample, :front)
+        {{last_timestamp, duration, Enum.reverse(samples)}, track}
+    end
+  end
+end

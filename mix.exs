@@ -23,6 +23,7 @@ defmodule HLX.MixProject do
       {:ex_mp4, "~> 0.11.0"},
       {:ex_m3u8, "~> 0.15.0"},
       {:mpeg_ts, github: "gBillal/kim_mpeg_ts", ref: "d8421f1"},
+      {:qex, "~> 0.5.1"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
