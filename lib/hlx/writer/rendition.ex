@@ -51,8 +51,8 @@ defmodule HLX.Writer.Rendition do
 
       lead_track =
         Enum.find_value(tracks, fn
-          %{type: :video, id: id} -> id
-          _other -> nil
+          {id, %{type: :video}} -> id
+          {_id, _track} -> nil
         end)
 
       config = %Config{
@@ -85,6 +85,9 @@ defmodule HLX.Writer.Rendition do
   @spec ready?(t()) :: boolean()
   def ready?(%{muxer_state: state}), do: not is_nil(state)
 
+  @spec tracks(t()) :: [HLX.Track.t()]
+  def tracks(%{tracks: tracks}), do: Map.values(tracks)
+
   @spec save_init_header(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
   def save_init_header(%{muxer_mod: TS} = rendition, storage), do: {rendition, storage}
 
@@ -100,41 +103,32 @@ defmodule HLX.Writer.Rendition do
     {rendition, storage}
   end
 
-  @spec push_sample(t(), HLX.Sample.t(), HLX.Storage.t(), boolean()) ::
-          {t(), HLX.Storage.t(), boolean()}
-  def push_sample(%{muxer_state: nil} = rendition, sample, storage, end_segment?) do
+  @spec process_sample(t(), HLX.Sample.t()) :: {t(), HLX.Sample.t()}
+  def process_sample(%{muxer_state: nil} = rendition, sample) do
     track = rendition.tracks[sample.track_id]
+    sample = %{sample | dts: sample.dts || sample.pts}
     {track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
-
     tracks = Map.put(rendition.tracks, track.id, track)
 
     if all_tracks_ready?(tracks) do
       muxer_state = rendition.muxer_mod.init(Map.values(tracks))
       rendition = %{rendition | muxer_state: muxer_state, tracks: tracks}
-      push_sample(rendition, sample, storage, end_segment?)
+      {rendition, sample}
     else
-      {%{rendition | tracks: tracks}, storage, false}
+      {rendition, sample}
     end
   end
 
-  def push_sample(rendition, sample, storage, end_segment?) do
-    track_id = sample.track_id
-    track = rendition.tracks[track_id]
-
+  def process_sample(rendition, sample) do
+    track = rendition.tracks[sample.track_id]
     sample = %{sample | dts: sample.dts || sample.pts}
     {_track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
+    {rendition, sample}
+  end
 
-    {duration, target_duration} = rendition.track_durations[track_id]
-
-    flush? =
-      duration >= target_duration and end_segment? and
-        (is_nil(rendition.lead_track) or rendition.lead_track == sample.track_id) and sample.sync?
-
-    {rendition, storage} =
-      if flush?,
-        do: flush(rendition, storage),
-        else: {rendition, storage}
-
+  @spec push_sample(t(), HLX.Sample.t()) :: t()
+  def push_sample(rendition, sample) do
+    track_id = sample.track_id
     muxer_state = rendition.muxer_mod.push(sample, rendition.muxer_state)
 
     track_durations =
@@ -142,8 +136,7 @@ defmodule HLX.Writer.Rendition do
         {duration + sample.duration, target_duration}
       end)
 
-    rendition = %{rendition | muxer_state: muxer_state, track_durations: track_durations}
-    {rendition, storage, flush?}
+    %{rendition | muxer_state: muxer_state, track_durations: track_durations}
   end
 
   @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}

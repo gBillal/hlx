@@ -3,7 +3,8 @@ defmodule HLX.Writer do
   Module for writing HLS master and media playlists.
   """
 
-  alias HLX.Writer.Rendition
+  alias HLX.SampleQueue
+  alias HLX.Writer.{Rendition, Variant}
 
   @type mode :: :live | :vod
   @type segment_type :: :mpeg_ts | :fmp4
@@ -33,7 +34,8 @@ defmodule HLX.Writer do
             storage: HLX.Storage.t(),
             max_segments: non_neg_integer(),
             lead_variant: String.t() | nil,
-            variants: %{String.t() => HLX.Writer.Rendition.t()}
+            variants: %{String.t() => Variant.t()},
+            state: :init | :muxing | :closed
           }
 
   defstruct [
@@ -44,7 +46,8 @@ defmodule HLX.Writer do
     :storage,
     :max_segments,
     :lead_variant,
-    :variants
+    variants: %{},
+    state: :init
   ]
 
   @doc """
@@ -61,7 +64,7 @@ defmodule HLX.Writer do
   def new(options) do
     with {:ok, options} <- validate_writer_opts(options) do
       {storage, options} = Keyword.pop!(options, :storage)
-      {:ok, struct!(%__MODULE__{variants: %{}, storage: HLX.Storage.new(storage)}, options)}
+      {:ok, struct(%__MODULE__{storage: HLX.Storage.new(storage)}, options)}
     end
   end
 
@@ -95,7 +98,7 @@ defmodule HLX.Writer do
         Keyword.take(opts, [:group_id, :default, :auto_select])
 
     with {:ok, rendition} <- Rendition.new(name, [opts[:track]], rendition_options) do
-      {:ok, maybe_save_init_header(writer, rendition)}
+      {:ok, maybe_save_init_header(writer, %Variant{id: name, rendition: rendition})}
     end
   end
 
@@ -127,7 +130,8 @@ defmodule HLX.Writer do
     ]
 
     with {:ok, rendition} <- Rendition.new(name, options[:tracks], rendition_options) do
-      writer = maybe_save_init_header(writer, rendition)
+      variant = %Variant{id: name, rendition: rendition}
+      writer = maybe_save_init_header(writer, variant)
 
       lead_variant =
         cond do
@@ -144,14 +148,90 @@ defmodule HLX.Writer do
   Writes a sample to the specified variant or rendition.
   """
   @spec write_sample(t(), String.t(), HLX.Sample.t()) :: t()
-  def write_sample(writer, variant_or_rendition, sample) do
-    variant = Map.fetch!(writer.variants, variant_or_rendition)
+  def write_sample(%{state: :init} = writer, variant_id, sample) do
+    writer =
+      cond do
+        writer.type == :media ->
+          [{id, variant}] = Map.to_list(writer.variants)
+          %{writer | variants: Map.put(writer.variants, id, Variant.create_sample_queue(variant))}
 
-    if Rendition.ready?(variant) do
-      do_push_sample(writer, variant, sample)
-    else
-      rendition = Rendition.push_sample(variant, sample, writer.storage, false)
-      maybe_save_init_header(writer, rendition)
+        is_nil(writer.lead_variant) ->
+          variants =
+            Map.new(writer.variants, fn {id, variant} ->
+              {id, Variant.create_sample_queue(variant)}
+            end)
+
+          %{writer | variants: variants}
+
+        true ->
+          lead_variant_id = writer.lead_variant
+
+          {dependant_variants, independant_variants} =
+            writer.variants
+            |> Map.values()
+            |> Enum.split_with(
+              &(&1.rendition.type == :rendition or is_nil(&1.rendition.lead_track))
+            )
+
+          variants =
+            Enum.reduce(independant_variants, writer.variants, fn variant, variants ->
+              extra_variants = if variant.id == lead_variant_id, do: dependant_variants, else: []
+
+              Map.put(
+                variants,
+                variant.id,
+                Variant.create_sample_queue(variant, extra_variants)
+              )
+            end)
+
+          dependant_variants
+          |> Enum.reduce(variants, fn variant, variants ->
+            Map.update!(variants, variant.id, &%{&1 | depends_on: lead_variant_id})
+          end)
+          |> then(&%{writer | variants: &1})
+      end
+
+    write_sample(%{writer | state: :muxing}, variant_id, sample)
+  end
+
+  def write_sample(writer, variant_id, sample) do
+    variant = Map.fetch!(writer.variants, variant_id)
+    ready? = Rendition.ready?(variant.rendition)
+
+    {rendition, sample} = Rendition.process_sample(variant.rendition, sample)
+    variant = %{variant | rendition: rendition}
+
+    writer =
+      if not ready? and Rendition.ready?(rendition),
+        do: maybe_save_init_header(writer, variant),
+        else: writer
+
+    queue_variant =
+      case variant.depends_on do
+        nil -> variant
+        id -> writer.variants[id]
+      end
+
+    id = {variant_id, sample.track_id}
+
+    case SampleQueue.push_sample(queue_variant.queue, id, sample) do
+      {true, samples, queue} ->
+        writer = flush_and_write(writer, SampleQueue.track_ids(queue))
+
+        variants =
+          samples
+          |> push_samples(writer.variants)
+          |> Map.update!(queue_variant.id, &%{&1 | queue: queue})
+
+        serialize_playlists(%{writer | variants: variants})
+
+      {false, samples, queue} ->
+        variants =
+          samples
+          |> push_samples(writer.variants)
+          |> Map.update!(queue_variant.id, &%{&1 | queue: queue})
+
+        %{writer | variants: variants}
     end
   end
 
@@ -163,58 +243,39 @@ defmodule HLX.Writer do
   """
   @spec close(t()) :: :ok
   def close(writer) do
-    {variants, writer} =
-      Enum.map_reduce(writer.variants, writer, fn {name, variant}, writer ->
-        {writer, variant} = flush_and_write(writer, variant)
-        {{name, variant}, writer}
-      end)
+    writer
+    |> flush_and_write()
+    |> serialize_playlists(true)
 
-    serialize_playlists(%{writer | variants: Map.new(variants)}, true)
     :ok
   end
 
-  defp do_push_sample(writer, variant, sample) do
-    lead_variant? = writer.lead_variant == variant.name
-    end_segment? = writer.lead_variant == nil or lead_variant? or variant.lead_track != nil
-
-    {variant, storage, flushed?} =
-      Rendition.push_sample(variant, sample, writer.storage, end_segment?)
-
-    variants = Map.delete(writer.variants, variant.name)
-
-    {variants, writer} =
-      if flushed? and lead_variant? do
-        Enum.map_reduce(variants, writer, fn {name, variant}, writer ->
-          case variant.lead_track do
-            nil ->
-              {writer, variant} = flush_and_write(writer, variant)
-              {{name, variant}, writer}
-
-            _ ->
-              {{name, variant}, writer}
-          end
-        end)
-        |> then(fn {variants, writer} -> {Map.new(variants), writer} end)
-      else
-        {variants, writer}
-      end
-
-    writer = %{writer | variants: Map.put(variants, variant.name, variant), storage: storage}
-    if flushed? and writer.mode == :live, do: serialize_playlists(writer), else: writer
-  end
-
-  defp maybe_save_init_header(writer, rendition) do
+  defp maybe_save_init_header(writer, %{rendition: rendition} = variant) do
     if Rendition.ready?(rendition) do
-      {rendition, storage} = Rendition.save_init_header(rendition, writer.storage)
-      %{writer | storage: storage, variants: Map.put(writer.variants, rendition.name, rendition)}
+      {variant, storage} = Variant.save_init_header(variant, writer.storage)
+      %{writer | storage: storage, variants: Map.put(writer.variants, variant.id, variant)}
     else
-      %{writer | variants: Map.put(writer.variants, rendition.name, rendition)}
+      %{writer | variants: Map.put(writer.variants, variant.id, variant)}
     end
   end
 
-  defp flush_and_write(writer, variant) do
-    {variant, storage} = Rendition.flush(variant, writer.storage)
-    {%{writer | storage: storage}, variant}
+  defp push_samples(samples, variants) do
+    Enum.reduce(samples, variants, fn {{name, _id}, sample}, variants ->
+      Map.update!(variants, name, &Variant.push_sample(&1, sample))
+    end)
+  end
+
+  defp flush_and_write(writer, variant_ids \\ nil) do
+    writer.variants
+    |> Enum.map_reduce(writer, fn {id, variant}, writer ->
+      if variant_ids == nil or id in variant_ids do
+        {variant, storage} = Variant.flush(variant, writer.storage)
+        {{id, variant}, %{writer | storage: storage}}
+      else
+        {{id, variant}, writer}
+      end
+    end)
+    |> then(fn {variants, writer} -> %{writer | variants: Map.new(variants)} end)
   end
 
   defp serialize_playlists(writer, end_list? \\ false)
@@ -224,7 +285,7 @@ defmodule HLX.Writer do
   defp serialize_playlists(%{variants: variants} = writer, end_list?) do
     {variants, storage} =
       Enum.map_reduce(variants, writer.storage, fn {_key, variant}, storage ->
-        playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.playlist)
+        playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.rendition.playlist)
 
         playlist = %{
           playlist
@@ -238,7 +299,7 @@ defmodule HLX.Writer do
         playlist = ExM3U8.serialize(playlist)
         playlist = if end_list?, do: playlist <> "#EXT-X-ENDLIST\n", else: playlist
 
-        {uri, storage} = HLX.Storage.store_playlist(variant.name, playlist, storage)
+        {uri, storage} = HLX.Storage.store_playlist(variant.id, playlist, storage)
         {{uri, variant}, storage}
       end)
 
@@ -266,7 +327,7 @@ defmodule HLX.Writer do
           end)
           |> Enum.unzip()
 
-        %{Rendition.to_hls_tag(variant, {max_bitrates, avg_bitrates}) | uri: uri}
+        %{Rendition.to_hls_tag(variant.rendition, {max_bitrates, avg_bitrates}) | uri: uri}
       end)
 
     payload =

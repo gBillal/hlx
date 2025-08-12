@@ -14,11 +14,10 @@ defmodule HLX.Muxer.CMAF do
           tracks: %{non_neg_integer() => ExMP4.Track.t()},
           header: ExMP4.Box.t(),
           segments: map(),
-          fragments: map(),
-          seq_no: non_neg_integer()
+          fragments: map()
         }
 
-  defstruct [:tracks, :header, :segments, :fragments, :seq_no]
+  defstruct [:tracks, :header, :segments, :fragments]
 
   @impl true
   def init(tracks) do
@@ -28,8 +27,7 @@ defmodule HLX.Muxer.CMAF do
       tracks: tracks,
       header: build_header(Map.values(tracks)),
       segments: new_segments(tracks),
-      fragments: new_fragments(tracks),
-      seq_no: 1
+      fragments: new_fragments(tracks)
     }
   end
 
@@ -75,7 +73,7 @@ defmodule HLX.Muxer.CMAF do
         segments: new_segments(tracks)
     }
 
-    {segment_data, %{state | seq_no: state.seq_no + 1}}
+    {segment_data, state}
   end
 
   defp build_header(tracks) do
@@ -119,7 +117,7 @@ defmodule HLX.Muxer.CMAF do
   end
 
   defp build_moof_and_mdat(state) do
-    moof = %Box.Moof{mfhd: %Box.Mfhd{sequence_number: state.seq_no}}
+    moof = %Box.Moof{mfhd: %Box.Mfhd{sequence_number: 0}}
     mdat = %Box.Mdat{content: []}
 
     {moof, mdat} =
