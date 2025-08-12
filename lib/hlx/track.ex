@@ -78,7 +78,7 @@ defmodule HLX.Track do
 
   def to_mp4_track(%{codec: codec} = track) when codec in [:hevc, :h265] do
     {vps, sps, pps} = track.priv_data
-    parsed_sps = H265.NALU.SPS.parse(List.first(sps))
+    parsed_sps = H265.NALU.SPS.parse(sps)
 
     %ExMP4.Track{
       id: track.id,
@@ -87,7 +87,7 @@ defmodule HLX.Track do
       timescale: track.timescale,
       width: H265.NALU.SPS.width(parsed_sps),
       height: H265.NALU.SPS.height(parsed_sps),
-      priv_data: Box.Hvcc.new(vps, sps, List.wrap(pps)),
+      priv_data: Box.Hvcc.new([vps], [sps], List.wrap(pps)),
       sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
       trex: %Box.Trex{
         track_id: track.id,

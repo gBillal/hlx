@@ -156,8 +156,12 @@ defmodule HLX.Writer do
           %{writer | variants: Map.put(writer.variants, id, Variant.create_sample_queue(variant))}
 
         is_nil(writer.lead_variant) ->
-          # NO video rendition, all tracks to one sample queue
-          writer
+          variants =
+            Map.new(writer.variants, fn {id, variant} ->
+              {id, Variant.create_sample_queue(variant)}
+            end)
+
+          %{writer | variants: variants}
 
         true ->
           lead_variant_id = writer.lead_variant

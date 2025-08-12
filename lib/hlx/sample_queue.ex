@@ -63,24 +63,12 @@ defmodule HLX.SampleQueue do
     end
   end
 
-  @spec push_sample(t(), track_id(), HLX.Sample.t()) :: {boolean(), list(), t()}
-  def push_sample(%{lead_track: nil} = sample_queue, id, sample) do
-    track = sample_queue.tracks[id]
-    target_duration = timescalify(sample_queue.target_duration, :millisecond, track.timescale)
-
-    if track.duration >= target_duration do
-      tracks = Map.update!(sample_queue.tracks, id, &%{&1 | duration: sample.duration})
-      {true, [{id, sample}], %{sample_queue | tracks: tracks}}
-    else
-      track = Map.update!(track, :duration, &(&1 + sample.duration))
-      {false, [{id, sample}], %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}}
-    end
-  end
-
   def push_sample(%{lead_track: id} = sample_queue, id, sample) do
     track = sample_queue.tracks[id]
     new_segment? = sample.sync? and track.duration >= sample_queue.target_duration
-    should_buffer? = new_segment? and not flush?(sample_queue)
+
+    should_buffer? =
+      new_segment? and not flush?(sample_queue) and map_size(sample_queue.tracks) > 1
 
     cond do
       track.buffer? or should_buffer? ->
@@ -159,14 +147,22 @@ defmodule HLX.SampleQueue do
 
   defp drain_lead_track(sample_queue) do
     track = sample_queue.tracks[sample_queue.lead_track]
-    acc = {sample_queue.last_sample_timestamp, 0, []}
+    last_sample_dts = sample_queue.last_sample_timestamp
 
-    {{last_timestamp, duration, samples}, track} = drain(track, nil, acc)
-    track = %{track | buffer?: false, duration: duration}
+    callback = fn sample ->
+      not sample.sync? or sample.dts - last_sample_dts < sample_queue.target_duration
+    end
+
+    {samples, track} = drain(track, callback, [])
+
+    {last_sample_timestamp, duration, samples} =
+      reverse_samples(samples, track.id, last_sample_dts)
+
+    track = %{track | buffer?: track.queue_size > 0, duration: duration}
 
     {%{
        sample_queue
-       | last_sample_timestamp: last_timestamp,
+       | last_sample_timestamp: last_sample_timestamp,
          tracks: Map.put(sample_queue.tracks, sample_queue.lead_track, track)
      }, samples}
   end
@@ -182,27 +178,33 @@ defmodule HLX.SampleQueue do
           timestamp =
             timescalify(sample_queue.last_sample_timestamp, lead_track.timescale, track.timescale)
 
-          {{_, _, samples}, track} = drain(track, timestamp, {0, 0, []})
-          {samples, Map.put(tracks, id, track)}
+          {samples, track} = drain(track, &(&1.dts <= timestamp), [])
+          {Enum.reduce(samples, [], &[{id, &1} | &2]), Map.put(tracks, id, track)}
         end
       end)
 
     {%{sample_queue | tracks: tracks}, Enum.concat(samples)}
   end
 
-  defp drain(%{queue_size: 0} = track, _timestamp, {last_timestamp, duration, samples}) do
-    {{last_timestamp, duration, Enum.reverse(samples)}, track}
+  defp drain(%{queue_size: 0} = track, _callback, samples), do: {samples, track}
+
+  defp drain(track, callback, samples) do
+    {sample, track} = pop_sample(track)
+
+    if callback.(sample),
+      do: drain(track, callback, [sample | samples]),
+      else: {samples, push(track, sample, :front)}
   end
 
-  defp drain(track, timestamp, {last_timestamp, duration, samples}) do
-    case pop_sample(track) do
-      {sample, track} when is_nil(timestamp) or sample.dts <= timestamp ->
-        acc = {sample.dts, duration + sample.duration, [{track.id, sample} | samples]}
-        drain(track, timestamp, acc)
+  defp reverse_samples([], _id, last_timestamp), do: {last_timestamp, 0, []}
 
-      {sample, track} ->
-        track = push(track, sample, :front)
-        {{last_timestamp, duration, Enum.reverse(samples)}, track}
-    end
+  defp reverse_samples(samples, id, _last_timestamp) do
+    last_sample_timestamp = hd(samples).dts
+
+    samples
+    |> Enum.reduce({0, []}, fn sample, {duration, samples} ->
+      {duration + sample.duration, [{id, sample} | samples]}
+    end)
+    |> then(&Tuple.insert_at(&1, 0, last_sample_timestamp))
   end
 end

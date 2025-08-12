@@ -35,17 +35,13 @@ defmodule HLX.Writer.Variant do
   @spec create_sample_queue(t(), [t()]) :: t()
   def create_sample_queue(%{rendition: rendition} = variant, dependant_variants \\ []) do
     tracks = Rendition.tracks(rendition)
+    lead_track = rendition.lead_track || hd(tracks).id
 
     sample_queue =
       Enum.reduce(
         tracks,
         SampleQueue.new(2000),
-        &SampleQueue.add_track(
-          &2,
-          {variant.id, &1.id},
-          &1.id == rendition.lead_track,
-          &1.timescale
-        )
+        &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
       )
 
     sample_queue =
