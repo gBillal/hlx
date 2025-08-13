@@ -3,7 +3,6 @@ defmodule HLX.Writer.Rendition do
 
   import HLX.SampleProcessor
 
-  alias __MODULE__.Config
   alias ExM3U8.Tags.{Stream, Media}
   alias HLX.Muxer.{CMAF, TS}
 
@@ -14,10 +13,9 @@ defmodule HLX.Writer.Rendition do
           tracks: %{non_neg_integer() => HLX.Track.t()},
           muxer_mod: module(),
           muxer_state: any() | nil,
-          track_durations: %{non_neg_integer() => {non_neg_integer(), non_neg_integer()}},
+          track_durations: %{non_neg_integer() => non_neg_integer()},
           lead_track: non_neg_integer() | nil,
-          target_duration: non_neg_integer(),
-          config: Config.t()
+          target_duration: non_neg_integer()
         }
 
   defstruct [
@@ -29,55 +27,28 @@ defmodule HLX.Writer.Rendition do
     :muxer_state,
     :track_durations,
     :lead_track,
-    :target_duration,
-    :config
+    :target_duration
   ]
 
   @spec new(binary(), [HLX.Track.t()], keyword()) :: {:ok, t()} | {:error, any()}
   def new(name, tracks, opts) do
-    target_duration = Keyword.get(opts, :target_duration, 2_000)
+    with {:ok, tracks} <- validate_tracks(tracks) do
+      target_duration = Keyword.get(opts, :target_duration, 2_000)
 
-    validation =
-      Enum.reduce_while(tracks, {:ok, %{}}, fn track, {:ok, acc} ->
-        case HLX.Track.validate(track) do
-          {:ok, track} -> {:cont, {:ok, Map.put(acc, track.id, track)}}
-          error -> {:halt, error}
-        end
-      end)
-
-    with {:ok, tracks} <- validation do
-      muxer_mod = if opts[:segment_type] == :mpeg_ts, do: TS, else: CMAF
-      muxer_state = if all_tracks_ready?(tracks), do: muxer_mod.init(Map.values(tracks))
-
-      lead_track =
-        Enum.find_value(tracks, fn
-          {id, %{type: :video}} -> id
-          {_id, _track} -> nil
-        end)
-
-      config = %Config{
+      rendition = %__MODULE__{
+        type: opts[:type],
         name: name,
-        audio: opts[:audio],
-        auto_select?: opts[:auto_select],
-        default?: opts[:default],
-        group_id: opts[:group_id],
-        language: opts[:language],
-        subtitles: opts[:subtitles]
+        playlist: HLX.MediaPlaylist.new(opts),
+        tracks: tracks,
+        track_durations: init_track_durations(tracks),
+        target_duration: target_duration
       }
 
-      {:ok,
-       %__MODULE__{
-         type: opts[:type],
-         name: name,
-         playlist: HLX.MediaPlaylist.new(opts),
-         tracks: tracks,
-         muxer_mod: muxer_mod,
-         muxer_state: muxer_state,
-         track_durations: init_track_durations(tracks, target_duration),
-         lead_track: lead_track,
-         target_duration: target_duration,
-         config: config
-       }}
+      rendition
+      |> assign_muxer(opts[:segment_type])
+      |> maybe_init_muxer()
+      |> assign_lead_track()
+      |> then(&{:ok, &1})
     end
   end
 
@@ -109,11 +80,12 @@ defmodule HLX.Writer.Rendition do
     sample = %{sample | dts: sample.dts || sample.pts}
     {track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
     tracks = Map.put(rendition.tracks, track.id, track)
+    rendition = %{rendition | tracks: tracks}
 
     if all_tracks_ready?(tracks) do
-      muxer_state = rendition.muxer_mod.init(Map.values(tracks))
-      rendition = %{rendition | muxer_state: muxer_state, tracks: tracks}
-      {rendition, sample}
+      rendition
+      |> maybe_init_muxer()
+      |> then(&{&1, sample})
     else
       {rendition, sample}
     end
@@ -130,11 +102,7 @@ defmodule HLX.Writer.Rendition do
   def push_sample(rendition, sample) do
     track_id = sample.track_id
     muxer_state = rendition.muxer_mod.push(sample, rendition.muxer_state)
-
-    track_durations =
-      Map.update!(rendition.track_durations, track_id, fn {duration, target_duration} ->
-        {duration + sample.duration, target_duration}
-      end)
+    track_durations = Map.update!(rendition.track_durations, track_id, &(&1 + sample.duration))
 
     %{rendition | muxer_state: muxer_state, track_durations: track_durations}
   end
@@ -165,7 +133,7 @@ defmodule HLX.Writer.Rendition do
       rendition
       | muxer_state: muxer_state,
         playlist: playlist,
-        track_durations: init_track_durations(rendition.tracks, rendition.target_duration)
+        track_durations: init_track_durations(rendition.tracks)
     }
 
     {rendition, storage}
@@ -196,40 +164,45 @@ defmodule HLX.Writer.Rendition do
     "segment_#{HLX.MediaPlaylist.segment_count(rendition.playlist)}.#{extension}"
   end
 
-  @spec to_hls_tag(t(), {list(), list()}) :: struct()
-  @spec to_hls_tag(t()) :: struct()
-  def to_hls_tag(state, bandwidths \\ {[], []})
-
-  def to_hls_tag(%{type: :rendition, config: config}, {_max, _avg}), do: Config.to_media(config)
-
-  def to_hls_tag(state, {max_bandwidths, avg_bandwidths}) do
-    {avg_band, max_band} = HLX.MediaPlaylist.bandwidth(state.playlist)
-
-    %{
-      Config.to_stream(state.config)
-      | bandwidth: max_band + Enum.sum(max_bandwidths),
-        average_bandwidth: avg_band + Enum.sum(avg_bandwidths)
-    }
-  end
-
-  defp init_track_durations(tracks, target_duration) do
-    Map.new(tracks, fn {id, track} ->
-      {id, {0, ExMP4.Helper.timescalify(target_duration, :millisecond, track.timescale)}}
+  defp validate_tracks(tracks) do
+    Enum.reduce_while(tracks, {:ok, %{}}, fn track, {:ok, acc} ->
+      case HLX.Track.validate(track) do
+        {:ok, track} -> {:cont, {:ok, Map.put(acc, track.id, track)}}
+        error -> {:halt, error}
+      end
     end)
   end
 
-  defp segment_duration(%{lead_track: nil} = rendition) do
+  defp assign_muxer(rendition, :mpeg_ts), do: %{rendition | muxer_mod: TS}
+  defp assign_muxer(rendition, :fmp4), do: %{rendition | muxer_mod: CMAF}
+
+  defp maybe_init_muxer(%{tracks: tracks} = rendition) do
+    if all_tracks_ready?(tracks) do
+      %{rendition | muxer_state: rendition.muxer_mod.init(Map.values(tracks))}
+    else
+      rendition
+    end
+  end
+
+  defp assign_lead_track(rendition) do
+    rendition.tracks
+    |> Enum.find_value(fn
+      {id, %{type: :video}} -> id
+      _other -> nil
+    end)
+    |> then(&%{rendition | lead_track: &1})
+  end
+
+  defp init_track_durations(tracks) do
+    Map.new(tracks, fn {id, _track} -> {id, 0} end)
+  end
+
+  defp segment_duration(rendition) do
     rendition.track_durations
-    |> Enum.map(fn {track_id, {duration, _target}} ->
+    |> Enum.map(fn {track_id, duration} ->
       duration / rendition.tracks[track_id].timescale
     end)
     |> Enum.max()
-  end
-
-  defp segment_duration(%{lead_track: track_id} = rendition) do
-    duration = rendition.track_durations[track_id] |> elem(0)
-    timescale = rendition.tracks[track_id].timescale
-    duration / timescale
   end
 
   defp container(TS), do: :mpeg_ts

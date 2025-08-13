@@ -1,4 +1,4 @@
-defmodule HLX.Writer.Rendition.Config do
+defmodule HLX.Writer.StreamInfo do
   @moduledoc false
 
   @type t :: %__MODULE__{
@@ -9,10 +9,19 @@ defmodule HLX.Writer.Rendition.Config do
           auto_select?: boolean(),
           audio: String.t(),
           subtitles: String.t(),
-          codecs: String.t() | nil
+          codecs: [String.t()]
         }
 
-  defstruct [:name, :group_id, :default?, :language, :auto_select?, :audio, :subtitles, :codecs]
+  defstruct [
+    :name,
+    :group_id,
+    :default?,
+    :language,
+    :auto_select?,
+    :audio,
+    :subtitles,
+    codecs: []
+  ]
 
   @spec to_stream(t()) :: ExM3U8.Tags.Stream.t()
   def to_stream(config) do
@@ -21,7 +30,8 @@ defmodule HLX.Writer.Rendition.Config do
       bandwidth: 0,
       audio: config.audio,
       subtitles: config.subtitles,
-      codecs: config.codecs
+      codecs: nil
+      # codecs: Enum.join(config.codecs, ",")
     }
   end
 

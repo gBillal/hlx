@@ -16,7 +16,7 @@ defmodule HLX.SampleProcessor do
 
     track =
       if keyframe? and sps != [] and pps != [],
-        do: %{track | priv_data: {List.first(sps), pps}},
+        do: Track.update_priv_data(track, {List.first(sps), pps}),
         else: track
 
     payload =
@@ -40,7 +40,7 @@ defmodule HLX.SampleProcessor do
 
     track =
       if keyframe? and sps != [] and pps != [],
-        do: %{track | priv_data: {List.first(vps), List.first(sps), pps}},
+        do: Track.update_priv_data(track, {List.first(vps), List.first(sps), pps}),
         else: track
 
     payload =
