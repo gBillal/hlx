@@ -95,12 +95,20 @@ defmodule HLX.Writer.Variant do
           |> Enum.flat_map(&Rendition.tracks(&1.rendition))
           |> Enum.map(& &1.mime)
 
+        tracks = Rendition.tracks(variant.rendition)
+
         codecs =
-          Rendition.tracks(variant.rendition)
+          tracks
           |> Enum.map(& &1.mime)
           |> Enum.concat(referenced_codecs)
           |> Enum.uniq()
           |> Enum.join(",")
+
+        resolution =
+          Enum.find_value(tracks, fn
+            %{width: nil} -> nil
+            %{width: width, height: height} -> {width, height}
+          end)
 
         {avg_bitrates, max_bitrates} =
           referenced_renditions
@@ -119,7 +127,8 @@ defmodule HLX.Writer.Variant do
           StreamInfo.to_stream(variant.config)
           | bandwidth: max_band + Enum.sum(max_bitrates),
             average_bandwidth: avg_band + Enum.sum(avg_bitrates),
-            codecs: codecs
+            codecs: codecs,
+            resolution: resolution
         }
     end
   end

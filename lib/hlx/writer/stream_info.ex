@@ -8,8 +8,7 @@ defmodule HLX.Writer.StreamInfo do
           language: String.t(),
           auto_select?: boolean(),
           audio: String.t(),
-          subtitles: String.t(),
-          codecs: [String.t()]
+          subtitles: String.t()
         }
 
   defstruct [
@@ -19,8 +18,7 @@ defmodule HLX.Writer.StreamInfo do
     :language,
     :auto_select?,
     :audio,
-    :subtitles,
-    codecs: []
+    :subtitles
   ]
 
   @spec to_stream(t()) :: ExM3U8.Tags.Stream.t()
@@ -31,7 +29,6 @@ defmodule HLX.Writer.StreamInfo do
       audio: config.audio,
       subtitles: config.subtitles,
       codecs: nil
-      # codecs: Enum.join(config.codecs, ",")
     }
   end
 
