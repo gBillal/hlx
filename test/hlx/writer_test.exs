@@ -21,7 +21,7 @@ defmodule HLX.WriterTest do
   }
 
   setup do
-    audio_track = %{@audio_track | priv_data: <<17, 144>>}
+    audio_track = HLX.Track.update_priv_data(@audio_track, <<17, 144>>)
     %{audio_track: audio_track, video_track: @default_track}
   end
 
@@ -212,7 +212,7 @@ defmodule HLX.WriterTest do
                  %ExM3U8.Tags.Stream{
                    uri: "video.m3u8",
                    audio: "audio-group",
-                   codecs: nil
+                   codecs: "avc1.64001F,mp4a.40.2"
                  }
                ]
              } = media_playlist
@@ -255,7 +255,9 @@ defmodule HLX.WriterTest do
                Writer.add_variant(writer, "video", tracks: [video_track], audio: "audio-group")
 
       assert {:ok, writer} =
-               Writer.add_variant(writer, "video2", tracks: [%{video_track | codec: :h265}, audio_track])
+               Writer.add_variant(writer, "video2",
+                 tracks: [%{video_track | codec: :h265}, audio_track]
+               )
 
       assert :ok =
                writer
@@ -290,12 +292,12 @@ defmodule HLX.WriterTest do
                  %ExM3U8.Tags.Stream{
                    uri: "video.m3u8",
                    audio: "audio-group",
-                   codecs: nil
+                   codecs: "avc1.64001F,mp4a.40.2"
                  },
                  %ExM3U8.Tags.Stream{
                    uri: "video2.m3u8",
                    audio: nil,
-                   codecs: nil
+                   codecs: "hvc1.1.6.L93.B0,mp4a.40.2"
                  }
                ]
              } = media_playlist

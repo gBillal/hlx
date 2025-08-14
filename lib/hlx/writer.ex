@@ -94,11 +94,13 @@ defmodule HLX.Writer do
         target_duration: 2000,
         segment_type: writer.segment_type,
         max_segments: writer.max_segments
-      ] ++
-        Keyword.take(opts, [:group_id, :default, :auto_select])
+      ]
 
     with {:ok, rendition} <- Rendition.new(name, [opts[:track]], rendition_options) do
-      {:ok, maybe_save_init_header(writer, %Variant{id: name, rendition: rendition})}
+      variant =
+        Variant.new(name, rendition, Keyword.take(opts, [:group_id, :default, :auto_select]))
+
+      {:ok, maybe_save_init_header(writer, variant)}
     end
   end
 
@@ -124,13 +126,12 @@ defmodule HLX.Writer do
     # TODO: validate options
     rendition_options = [
       target_duration: 2000,
-      audio: options[:audio],
       segment_type: writer.segment_type,
       max_segments: writer.max_segments
     ]
 
     with {:ok, rendition} <- Rendition.new(name, options[:tracks], rendition_options) do
-      variant = %Variant{id: name, rendition: rendition}
+      variant = Variant.new(name, rendition, audio: options[:audio])
       writer = maybe_save_init_header(writer, variant)
 
       lead_variant =
@@ -304,7 +305,7 @@ defmodule HLX.Writer do
       end)
 
     if writer.type == :master do
-      storage = serialize_master_playlist(writer, variants)
+      storage = serialize_master_playlist(%{writer | storage: storage}, variants)
       %{writer | storage: storage}
     else
       %{writer | storage: storage}
@@ -314,20 +315,8 @@ defmodule HLX.Writer do
   defp serialize_master_playlist(writer, variants) do
     streams =
       Enum.map(variants, fn {uri, variant} ->
-        renditions = get_referenced_renditions(variant, variants)
-
-        {avg_bitrates, max_bitrates} =
-          renditions
-          |> Map.values()
-          |> Enum.map(fn renditions ->
-            renditions
-            |> Enum.map(&Rendition.bandwidth/1)
-            |> Enum.unzip()
-            |> then(fn {a, m} -> {Enum.max(a), Enum.max(m)} end)
-          end)
-          |> Enum.unzip()
-
-        %{Rendition.to_hls_tag(variant.rendition, {max_bitrates, avg_bitrates}) | uri: uri}
+        renditions = get_referenced_renditions(variant, Keyword.values(variants))
+        %{Variant.to_hls_tag(variant, renditions) | uri: uri}
       end)
 
     payload =
@@ -340,16 +329,10 @@ defmodule HLX.Writer do
     HLX.Storage.store_master_playlist(payload, writer.storage)
   end
 
-  defp get_referenced_renditions(rendition, renditions) do
-    case Rendition.referenced_renditions(rendition) do
-      [] ->
-        %{}
-
-      group_ids ->
-        renditions
-        |> Enum.group_by(&Rendition.group_id/1)
-        |> Map.take(group_ids)
-    end
+  defp get_referenced_renditions(variant, renditions) do
+    renditions
+    |> Enum.group_by(&Variant.group_id/1)
+    |> Map.take(Variant.referenced_renditions(variant))
   end
 
   defp validate_writer_opts(options) do

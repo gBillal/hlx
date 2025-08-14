@@ -2,7 +2,7 @@ defmodule HLX.Track do
   @moduledoc """
   Module describing a media track.
 
-  All the fields are required except for `priv_data`.
+  The following fields are required: `id`, `type`, `codec`, `timescale`.
 
   ## Private Data
   `priv_data` contains codec specific initialization data. The format of the field is:
@@ -16,7 +16,7 @@ defmodule HLX.Track do
   """
 
   alias ExMP4.Box
-  alias MediaCodecs.{H264, H265}
+  alias MediaCodecs.{MPEG4, H264, H265}
 
   @codecs [:h264, :h265, :hevc, :aac]
 
@@ -27,16 +27,26 @@ defmodule HLX.Track do
           type: :video | :audio,
           codec: codec(),
           timescale: non_neg_integer(),
-          priv_data: any()
+          priv_data: any(),
+          width: non_neg_integer() | nil,
+          height: non_neg_integer() | nil,
+          mime: String.t() | nil
         }
 
-  defstruct [:id, :type, :codec, :timescale, :priv_data]
+  defstruct [:id, :type, :codec, :timescale, :priv_data, :mime, :width, :height]
 
   @doc """
   Creates a new track struct with the given options.
   """
   @spec new(keyword()) :: t()
-  def new(opts), do: struct(__MODULE__, opts)
+  def new(opts), do: struct(__MODULE__, opts) |> update_fields()
+
+  @spec update_priv_data(t(), any()) :: t()
+  def update_priv_data(%{priv_data: priv_data} = track, priv_data), do: track
+
+  def update_priv_data(track, priv_data) do
+    update_fields(%{track | priv_data: priv_data})
+  end
 
   @doc """
   Creates a new track from an `ex_mp4` track.
@@ -50,6 +60,7 @@ defmodule HLX.Track do
       timescale: track.timescale,
       priv_data: priv_data(track.media, track.priv_data)
     }
+    |> update_fields()
   end
 
   @doc """
@@ -58,15 +69,14 @@ defmodule HLX.Track do
   @spec to_mp4_track(t()) :: ExMP4.Track.t()
   def to_mp4_track(%{codec: :h264} = track) do
     {sps, pps} = track.priv_data
-    parsed_sps = H264.NALU.SPS.parse(sps)
 
     %ExMP4.Track{
       id: track.id,
       type: track.type,
       media: track.codec,
       timescale: track.timescale,
-      width: H264.NALU.SPS.width(parsed_sps),
-      height: H264.NALU.SPS.height(parsed_sps),
+      width: track.width,
+      height: track.height,
       priv_data: Box.Avcc.new([sps], List.wrap(pps)),
       sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
       trex: %Box.Trex{
@@ -78,15 +88,14 @@ defmodule HLX.Track do
 
   def to_mp4_track(%{codec: codec} = track) when codec in [:hevc, :h265] do
     {vps, sps, pps} = track.priv_data
-    parsed_sps = H265.NALU.SPS.parse(sps)
 
     %ExMP4.Track{
       id: track.id,
       type: track.type,
       media: :h265,
       timescale: track.timescale,
-      width: H265.NALU.SPS.width(parsed_sps),
-      height: H265.NALU.SPS.height(parsed_sps),
+      width: track.width,
+      height: track.height,
       priv_data: Box.Hvcc.new([vps], [sps], List.wrap(pps)),
       sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
       trex: %Box.Trex{
@@ -97,10 +106,7 @@ defmodule HLX.Track do
   end
 
   def to_mp4_track(%{codec: :aac, priv_data: priv_data} = track) do
-    audio_sepecific_config =
-      <<priv_data.object_type::5,
-        MediaCodecs.MPEG4.Utils.sampling_frequency_index(track.priv_data.sampling_frequency)::4,
-        priv_data.channels::4, priv_data.aot_specific_config::bitstring>>
+    audio_sepecific_config = MPEG4.AudioSpecificConfig.serialize(priv_data)
 
     %ExMP4.Track{
       id: track.id,
@@ -155,4 +161,42 @@ defmodule HLX.Track do
   end
 
   defp priv_data(_media, _priv_data), do: nil
+
+  defp update_fields(%{priv_data: nil} = track), do: track
+
+  defp update_fields(%{codec: :h264, priv_data: {sps, _pps}} = track) do
+    sps = H264.NALU.SPS.parse(sps)
+
+    %{
+      track
+      | mime: H264.NALU.SPS.mime_type(sps, "avc1"),
+        width: H264.NALU.SPS.width(sps),
+        height: H264.NALU.SPS.height(sps)
+    }
+  end
+
+  defp update_fields(%{codec: codec, priv_data: {_vps, sps, _pps}} = track)
+       when codec in [:h265, :hevc] do
+    sps = H265.NALU.SPS.parse(sps)
+
+    %{
+      track
+      | mime: H265.NALU.SPS.mime_type(sps, "hvc1"),
+        width: H265.NALU.SPS.width(sps),
+        height: H265.NALU.SPS.height(sps)
+    }
+  end
+
+  defp update_fields(%{codec: :aac, priv_data: audio_specific_config} = track) do
+    audio_specific_config =
+      if is_binary(audio_specific_config),
+        do: MPEG4.AudioSpecificConfig.parse(audio_specific_config),
+        else: audio_specific_config
+
+    %{
+      track
+      | priv_data: audio_specific_config,
+        mime: "mp4a.40.#{audio_specific_config.object_type}"
+    }
+  end
 end
