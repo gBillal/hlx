@@ -48,6 +48,12 @@ defmodule HLX.WriterTest do
 
       assert {:error, :not_master_playlist} =
                Writer.add_rendition(writer, "video", type: :audio, track: @audio_track)
+
+      assert writer = Writer.new!(type: :media, storage: %Storage.File{dir: dir})
+
+      assert_raise RuntimeError, fn ->
+        Writer.add_rendition!(writer, "video", type: :audio, track: @audio_track)
+      end
     end
   end
 
@@ -240,24 +246,19 @@ defmodule HLX.WriterTest do
     end
 
     test "2 audio & 2 videos", %{audio_track: audio_track, video_track: video_track, tmp_dir: dir} do
-      assert {:ok, writer} =
-               Writer.new(
+      assert writer =
+               Writer.new!(
                  type: :master,
                  storage: %Storage.File{dir: dir},
                  mode: :vod,
                  segment_type: :fmp4
                )
 
-      assert {:ok, writer} =
-               Writer.add_rendition(writer, "audio", track: audio_track, group_id: "audio-group")
-
-      assert {:ok, writer} =
-               Writer.add_variant(writer, "video", tracks: [video_track], audio: "audio-group")
-
-      assert {:ok, writer} =
-               Writer.add_variant(writer, "video2",
-                 tracks: [%{video_track | codec: :h265}, audio_track]
-               )
+      writer =
+        writer
+        |> Writer.add_rendition!("audio", track: audio_track, group_id: "audio-group")
+        |> Writer.add_variant!("video", tracks: [video_track], audio: "audio-group")
+        |> Writer.add_variant!("video2", tracks: [%{video_track | codec: :h265}, audio_track])
 
       assert :ok =
                writer

@@ -22,7 +22,7 @@ defmodule HLX.SampleProcessor do
     payload =
       cond do
         container == :fmp4 ->
-          H264.annexb_to_elementary_stream(nalus)
+          Enum.map(nalus, &[<<byte_size(&1)::32>>, &1])
 
         container == :mpeg_ts and H264.NALU.type(List.first(nalus)) != :aud ->
           to_annexb(@h264_aud, sample.payload)
@@ -46,7 +46,7 @@ defmodule HLX.SampleProcessor do
     payload =
       cond do
         container == :fmp4 ->
-          H265.annexb_to_elementary_stream(nalus)
+          Enum.map(nalus, &[<<byte_size(&1)::32>>, &1])
 
         container == :mpeg_ts and H265.NALU.type(List.first(nalus)) != :aud ->
           to_annexb(@h265_aud, sample.payload)

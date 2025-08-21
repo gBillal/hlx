@@ -69,6 +69,17 @@ defmodule HLX.Writer do
   end
 
   @doc """
+  Same as `new/1`, but raises an error if the operation fails.
+  """
+  @spec new!(Keyword.t()) :: t()
+  def new!(options) do
+    case new(options) do
+      {:ok, writer} -> writer
+      {:error, reason} -> raise "Failed to create writer: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
   Add a new rendition to the master playlist.
 
   This adds a new `EXT-X-MEDIA` entry to the master playlist.
@@ -101,6 +112,17 @@ defmodule HLX.Writer do
         Variant.new(name, rendition, Keyword.take(opts, [:group_id, :default, :auto_select]))
 
       {:ok, maybe_save_init_header(writer, variant)}
+    end
+  end
+
+  @doc """
+  Same as `add_rendition/3`, but raises an error if the operation fails.
+  """
+  @spec add_rendition!(t(), String.t(), rendition_opts()) :: t()
+  def add_rendition!(writer, name, opts) do
+    case add_rendition(writer, name, opts) do
+      {:ok, writer} -> writer
+      {:error, reason} -> raise "Failed to add rendition: #{inspect(reason)}"
     end
   end
 
@@ -142,6 +164,17 @@ defmodule HLX.Writer do
         end
 
       {:ok, %{writer | lead_variant: lead_variant}}
+    end
+  end
+
+  @doc """
+  Same as `add_variant/3`, but raises an error if the operation fails.
+  """
+  @spec add_variant!(t(), String.t(), variant_opts()) :: t()
+  def add_variant!(writer, name, options) do
+    case add_variant(writer, name, options) do
+      {:ok, writer} -> writer
+      {:error, reason} -> raise "Failed to add variant: #{inspect(reason)}"
     end
   end
 
@@ -205,7 +238,7 @@ defmodule HLX.Writer do
     writer =
       if not ready? and Rendition.ready?(rendition),
         do: maybe_save_init_header(writer, variant),
-        else: writer
+        else: %{writer | variants: Map.put(writer.variants, variant.id, variant)}
 
     queue_variant =
       case variant.depends_on do
