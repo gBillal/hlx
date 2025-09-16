@@ -135,7 +135,7 @@ defmodule HLX.Writer do
   the playlist (`<name>.m3u8`).
 
   The following parameter may be provided:
-    * `tracks` - [Required] One or more tracks definitions, all the nedia are muxed in the same segment.
+    * `tracks` - [Required] One or more tracks definitions, all the media are muxed in the same segment.
     * `audio` - Reference to a `group_id` of a rendition.
   """
   @spec add_variant(t(), String.t(), variant_opts()) :: {:ok, t()} | {:error, any()}

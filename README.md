@@ -1,5 +1,8 @@
 # HLX
 
+[![Hex.pm](https://img.shields.io/hexpm/v/hlx.svg)](https://hex.pm/packages/hlx)
+[![API Docs](https://img.shields.io/badge/api-docs-yellow.svg?style=flat)](https://hexdocs.pm/hlx)
+
 HLS writer and reader (Planned).
 
 Features:
@@ -11,7 +14,7 @@ Features:
     * Save playlists/segments on disk or anywhere else by implementing `HLX.Storage` behaviour.
 
 ## Usage
-To create a simple media playlists with target duration of 2 seconds (default) and store the manifest and 
+To create a simple media playlists with target duration of 2 seconds (default) and store the manifest and
 segments on the current directory:
 
 ```elixir
@@ -22,7 +25,7 @@ track = HLX.Track.new(id: 1, type: :video, codec: :h264, timescale: 90_000)
 # send samples
 samples = ...
 Enum.reduce(samples, writer, &HLX.Writer.write_sample(&2, &1))
-``` 
+```
 
 ## Installation
 
@@ -31,8 +34,7 @@ The package can be installed by adding `hlx` to your list of dependencies in `mi
 ```elixir
 def deps do
   [
-    {:hlx, "~> 0.1.0"}
+    {:hlx, "~> 0.1.1"}
   ]
 end
 ```
-

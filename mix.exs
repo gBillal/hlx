@@ -1,7 +1,7 @@
 defmodule HLX.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @github_url "https://github.com/gBillal/hlx"
 
   def project do
@@ -55,7 +55,12 @@ defmodule HLX.MixProject do
       main: "readme",
       extras: ["README.md", "LICENSE"],
       formatters: ["html"],
-      source_ref: "v#{@version}"
+      source_ref: "v#{@version}",
+      nest_modules_by_prefix: [
+        HLX.Muxer,
+        HLX.Storage,
+        HLX
+      ]
     ]
   end
 end
