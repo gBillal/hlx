@@ -2,6 +2,7 @@ defmodule HLX.Writer.StreamInfo do
   @moduledoc false
 
   @type t :: %__MODULE__{
+          type: :rendition | :variant,
           name: String.t(),
           group_id: String.t(),
           default?: boolean(),
@@ -12,6 +13,7 @@ defmodule HLX.Writer.StreamInfo do
         }
 
   defstruct [
+    :type,
     :name,
     :group_id,
     :default?,

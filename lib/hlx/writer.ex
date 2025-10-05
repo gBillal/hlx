@@ -4,7 +4,7 @@ defmodule HLX.Writer do
   """
 
   alias HLX.SampleQueue
-  alias HLX.Writer.{Rendition, Variant}
+  alias HLX.Writer.{TracksMuxer, Variant}
 
   @type mode :: :live | :vod
   @type segment_type :: :mpeg_ts | :fmp4
@@ -99,18 +99,11 @@ defmodule HLX.Writer do
 
   def add_rendition(writer, name, opts) do
     # Validate options
-    rendition_options =
-      [
-        type: :rendition,
-        target_duration: 2000,
-        segment_type: writer.segment_type,
-        max_segments: writer.max_segments
-      ]
+    muxer_options = [segment_type: writer.segment_type, max_segments: writer.max_segments]
+    rendition_options = opts ++ [type: :rendition, max_segments: writer.max_segments]
 
-    with {:ok, rendition} <- Rendition.new(name, [opts[:track]], rendition_options) do
-      variant =
-        Variant.new(name, rendition, Keyword.take(opts, [:group_id, :default, :auto_select]))
-
+    with {:ok, rendition} <- TracksMuxer.new(name, [opts[:track]], muxer_options) do
+      variant = Variant.new(name, rendition, rendition_options)
       {:ok, maybe_save_init_header(writer, variant)}
     end
   end
@@ -146,14 +139,17 @@ defmodule HLX.Writer do
 
   def add_variant(writer, name, options) do
     # TODO: validate options
+    muxer_options = [segment_type: writer.segment_type]
+
     rendition_options = [
       target_duration: 2000,
       segment_type: writer.segment_type,
       max_segments: writer.max_segments,
-      audio: options[:audio]
+      audio: options[:audio],
+      type: :variant
     ]
 
-    with {:ok, rendition} <- Rendition.new(name, options[:tracks], rendition_options) do
+    with {:ok, rendition} <- TracksMuxer.new(name, options[:tracks], muxer_options) do
       variant = Variant.new(name, rendition, rendition_options)
       writer = maybe_save_init_header(writer, variant)
 
@@ -205,7 +201,7 @@ defmodule HLX.Writer do
             writer.variants
             |> Map.values()
             |> Enum.split_with(
-              &(&1.rendition.type == :rendition or is_nil(&1.rendition.lead_track))
+              &(&1.config.type == :rendition or is_nil(&1.tracks_muxer.lead_track))
             )
 
           variants =
@@ -231,13 +227,13 @@ defmodule HLX.Writer do
 
   def write_sample(writer, variant_id, sample) do
     variant = Map.fetch!(writer.variants, variant_id)
-    ready? = Rendition.ready?(variant.rendition)
+    ready? = TracksMuxer.ready?(variant.tracks_muxer)
 
-    {rendition, sample} = Rendition.process_sample(variant.rendition, sample)
-    variant = %{variant | rendition: rendition}
+    {tracks_muxer, sample} = TracksMuxer.process_sample(variant.tracks_muxer, sample)
+    variant = %{variant | tracks_muxer: tracks_muxer}
 
     writer =
-      if not ready? and Rendition.ready?(rendition),
+      if not ready? and TracksMuxer.ready?(tracks_muxer),
         do: maybe_save_init_header(writer, variant),
         else: %{writer | variants: Map.put(writer.variants, variant.id, variant)}
 
@@ -285,8 +281,8 @@ defmodule HLX.Writer do
     :ok
   end
 
-  defp maybe_save_init_header(writer, %{rendition: rendition} = variant) do
-    if Rendition.ready?(rendition) do
+  defp maybe_save_init_header(writer, %{tracks_muxer: tracks_muxer} = variant) do
+    if TracksMuxer.ready?(tracks_muxer) do
       {variant, storage} = Variant.save_init_header(variant, writer.storage)
       %{writer | storage: storage, variants: Map.put(writer.variants, variant.id, variant)}
     else

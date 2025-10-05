@@ -1,13 +1,11 @@
-defmodule HLX.Writer.Rendition do
+defmodule HLX.Writer.TracksMuxer do
   @moduledoc false
 
   import HLX.SampleProcessor
 
-  alias ExM3U8.Tags.{Stream, Media}
   alias HLX.Muxer.{CMAF, TS}
 
   @type t :: %__MODULE__{
-          type: :rendition | :variant | nil,
           name: binary(),
           tracks: %{non_neg_integer() => HLX.Track.t()},
           muxer_mod: module(),
@@ -17,7 +15,6 @@ defmodule HLX.Writer.Rendition do
         }
 
   defstruct [
-    :type,
     :name,
     :tracks,
     :muxer_mod,
@@ -29,14 +26,13 @@ defmodule HLX.Writer.Rendition do
   @spec new(binary(), [HLX.Track.t()], keyword()) :: {:ok, t()} | {:error, any()}
   def new(name, tracks, opts) do
     with {:ok, tracks} <- validate_tracks(tracks) do
-      rendition = %__MODULE__{
-        type: opts[:type],
+      tracks_muxer = %__MODULE__{
         name: name,
         tracks: tracks,
         track_durations: init_track_durations(tracks)
       }
 
-      rendition
+      tracks_muxer
       |> assign_muxer(opts[:segment_type])
       |> maybe_init_muxer()
       |> assign_lead_track()
@@ -54,65 +50,54 @@ defmodule HLX.Writer.Rendition do
   @spec save_init_header(t()) :: iodata()
   def save_init_header(%{muxer_mod: TS}), do: <<>>
 
-  def save_init_header(rendition) do
-    rendition.muxer_mod.get_init_header(rendition.muxer_state)
+  def save_init_header(tracks_muxer) do
+    tracks_muxer.muxer_mod.get_init_header(tracks_muxer.muxer_state)
   end
 
   @spec process_sample(t(), HLX.Sample.t()) :: {t(), HLX.Sample.t()}
-  def process_sample(%{muxer_state: nil} = rendition, sample) do
-    track = rendition.tracks[sample.track_id]
+  def process_sample(%{muxer_state: nil} = tracks_muxer, sample) do
+    track = tracks_muxer.tracks[sample.track_id]
     sample = %{sample | dts: sample.dts || sample.pts}
-    {track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
-    tracks = Map.put(rendition.tracks, track.id, track)
-    rendition = %{rendition | tracks: tracks}
+    {track, sample} = process_sample(track, sample, container(tracks_muxer.muxer_mod))
+    tracks = Map.put(tracks_muxer.tracks, track.id, track)
+    tracks_muxer = %{tracks_muxer | tracks: tracks}
 
     if all_tracks_ready?(tracks) do
-      rendition
+      tracks_muxer
       |> maybe_init_muxer()
       |> then(&{&1, sample})
     else
-      {rendition, sample}
+      {tracks_muxer, sample}
     end
   end
 
-  def process_sample(rendition, sample) do
-    track = rendition.tracks[sample.track_id]
+  def process_sample(tracks_muxer, sample) do
+    track = tracks_muxer.tracks[sample.track_id]
     sample = %{sample | dts: sample.dts || sample.pts}
-    {_track, sample} = process_sample(track, sample, container(rendition.muxer_mod))
-    {rendition, sample}
+    {_track, sample} = process_sample(track, sample, container(tracks_muxer.muxer_mod))
+    {tracks_muxer, sample}
   end
 
   @spec push_sample(t(), HLX.Sample.t()) :: t()
-  def push_sample(rendition, sample) do
+  def push_sample(tracks_muxer, sample) do
     track_id = sample.track_id
-    muxer_state = rendition.muxer_mod.push(sample, rendition.muxer_state)
-    track_durations = Map.update!(rendition.track_durations, track_id, &(&1 + sample.duration))
+    muxer_state = tracks_muxer.muxer_mod.push(sample, tracks_muxer.muxer_state)
+    track_durations = Map.update!(tracks_muxer.track_durations, track_id, &(&1 + sample.duration))
 
-    %{rendition | muxer_state: muxer_state, track_durations: track_durations}
+    %{tracks_muxer | muxer_state: muxer_state, track_durations: track_durations}
   end
 
   @spec flush(t()) :: {iodata(), non_neg_integer(), t()}
-  def flush(rendition) do
-    {data, muxer_state} = rendition.muxer_mod.flush_segment(rendition.muxer_state)
+  def flush(tracks_muxer) do
+    {data, muxer_state} = tracks_muxer.muxer_mod.flush_segment(tracks_muxer.muxer_state)
 
-    {data, segment_duration(rendition),
+    {data, segment_duration(tracks_muxer),
      %{
-       rendition
+       tracks_muxer
        | muxer_state: muxer_state,
-         track_durations: init_track_durations(rendition.tracks)
+         track_durations: init_track_durations(tracks_muxer.tracks)
      }}
   end
-
-  @spec referenced_renditions(t()) :: [String.t()]
-  def referenced_renditions(%{hls_tag: %Stream{} = stream}) do
-    Enum.reject([stream.audio, stream.subtitles], &is_nil/1)
-  end
-
-  def referenced_renditions(_rendition), do: []
-
-  @spec group_id(t()) :: String.t() | nil
-  def group_id(%{hls_tag: %Media{group_id: group_id}}), do: group_id
-  def group_id(_rendition), do: nil
 
   defp validate_tracks(tracks) do
     Enum.reduce_while(tracks, {:ok, %{}}, fn track, {:ok, acc} ->
@@ -123,34 +108,34 @@ defmodule HLX.Writer.Rendition do
     end)
   end
 
-  defp assign_muxer(rendition, :mpeg_ts), do: %{rendition | muxer_mod: TS}
-  defp assign_muxer(rendition, :fmp4), do: %{rendition | muxer_mod: CMAF}
+  defp assign_muxer(tracks_muxer, :mpeg_ts), do: %{tracks_muxer | muxer_mod: TS}
+  defp assign_muxer(tracks_muxer, :fmp4), do: %{tracks_muxer | muxer_mod: CMAF}
 
-  defp maybe_init_muxer(%{tracks: tracks} = rendition) do
+  defp maybe_init_muxer(%{tracks: tracks} = tracks_muxer) do
     if all_tracks_ready?(tracks) do
-      %{rendition | muxer_state: rendition.muxer_mod.init(Map.values(tracks))}
+      %{tracks_muxer | muxer_state: tracks_muxer.muxer_mod.init(Map.values(tracks))}
     else
-      rendition
+      tracks_muxer
     end
   end
 
-  defp assign_lead_track(rendition) do
-    rendition.tracks
+  defp assign_lead_track(tracks_muxer) do
+    tracks_muxer.tracks
     |> Enum.find_value(fn
       {id, %{type: :video}} -> id
       _other -> nil
     end)
-    |> then(&%{rendition | lead_track: &1})
+    |> then(&%{tracks_muxer | lead_track: &1})
   end
 
   defp init_track_durations(tracks) do
     Map.new(tracks, fn {id, _track} -> {id, 0} end)
   end
 
-  defp segment_duration(rendition) do
-    rendition.track_durations
+  defp segment_duration(tracks_muxer) do
+    tracks_muxer.track_durations
     |> Enum.map(fn {track_id, duration} ->
-      duration / rendition.tracks[track_id].timescale
+      duration / tracks_muxer.tracks[track_id].timescale
     end)
     |> Enum.max()
   end

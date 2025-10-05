@@ -2,25 +2,26 @@ defmodule HLX.Writer.Variant do
   @moduledoc false
 
   alias HLX.{MediaPlaylist, SampleQueue}
-  alias HLX.Writer.{Rendition, StreamInfo}
+  alias HLX.Writer.{StreamInfo, TracksMuxer}
 
   @type t :: %__MODULE__{
           id: String.t(),
           playlist: MediaPlaylist.t(),
-          rendition: Rendition.t(),
+          tracks_muxer: TracksMuxer.t(),
           queue: SampleQueue.t(),
           depends_on: String.t(),
           config: StreamInfo.t()
         }
 
-  defstruct [:id, :rendition, :playlist, :queue, :depends_on, :config]
+  defstruct [:id, :tracks_muxer, :playlist, :queue, :depends_on, :config]
 
-  @spec new(String.t(), Rendition.t(), keyword()) :: t()
-  def new(id, rendition, config) do
+  @spec new(String.t(), TracksMuxer.t(), keyword()) :: t()
+  def new(id, tracks_muxer, config) do
     playlist = MediaPlaylist.new(config)
 
     config = %StreamInfo{
       name: id,
+      type: config[:type],
       audio: config[:audio],
       auto_select?: config[:auto_select],
       default?: config[:default],
@@ -29,12 +30,12 @@ defmodule HLX.Writer.Variant do
       subtitles: config[:subtitles]
     }
 
-    %__MODULE__{id: id, rendition: rendition, playlist: playlist, config: config}
+    %__MODULE__{id: id, tracks_muxer: tracks_muxer, playlist: playlist, config: config}
   end
 
   @spec save_init_header(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
   def save_init_header(variant, storage) do
-    data = Rendition.save_init_header(variant.rendition)
+    data = TracksMuxer.save_init_header(variant.tracks_muxer)
     {uri, storage} = HLX.Storage.store_init_header(variant.id, "init.mp4", data, storage)
 
     variant = %{
@@ -47,14 +48,14 @@ defmodule HLX.Writer.Variant do
 
   @spec push_sample(t(), HLX.Sample.t()) :: t()
   def push_sample(variant, sample) do
-    rendition = Rendition.push_sample(variant.rendition, sample)
-    %{variant | rendition: rendition}
+    tracks_muxer = TracksMuxer.push_sample(variant.tracks_muxer, sample)
+    %{variant | tracks_muxer: tracks_muxer}
   end
 
   @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
   def flush(variant, storage) do
     name = generate_segment_name(variant)
-    {data, duration, rendition} = Rendition.flush(variant.rendition)
+    {data, duration, tracks_muxer} = TracksMuxer.flush(variant.tracks_muxer)
     {uri, storage} = HLX.Storage.store_segment(variant.id, name, data, storage)
 
     segment =
@@ -73,7 +74,7 @@ defmodule HLX.Writer.Variant do
           {playlist, HLX.Storage.delete_segment(variant.id, discarded, storage)}
       end
 
-    {%{variant | rendition: rendition, playlist: playlist}, storage}
+    {%{variant | tracks_muxer: tracks_muxer, playlist: playlist}, storage}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]
@@ -86,9 +87,9 @@ defmodule HLX.Writer.Variant do
 
   @spec create_sample_queue(t()) :: t()
   @spec create_sample_queue(t(), [t()]) :: t()
-  def create_sample_queue(%{rendition: rendition} = variant, dependant_variants \\ []) do
-    tracks = Rendition.tracks(rendition)
-    lead_track = rendition.lead_track || hd(tracks).id
+  def create_sample_queue(%{tracks_muxer: tracks_muxer} = variant, dependant_variants \\ []) do
+    tracks = TracksMuxer.tracks(tracks_muxer)
+    lead_track = tracks_muxer.lead_track || hd(tracks).id
 
     sample_queue =
       Enum.reduce(
@@ -99,8 +100,8 @@ defmodule HLX.Writer.Variant do
 
     sample_queue =
       Enum.reduce(dependant_variants, sample_queue, fn variant, queue ->
-        variant.rendition
-        |> Rendition.tracks()
+        variant.tracks_muxer
+        |> TracksMuxer.tracks()
         |> Enum.reduce(
           queue,
           &SampleQueue.add_track(&2, {variant.id, &1.id}, false, &1.timescale)
@@ -112,7 +113,7 @@ defmodule HLX.Writer.Variant do
 
   @spec to_hls_tag(t(), %{String.t() => t()}) :: struct()
   def to_hls_tag(variant, referenced_renditions) do
-    case variant.rendition.type do
+    case variant.config.type do
       :rendition ->
         StreamInfo.to_media(variant.config)
 
@@ -121,10 +122,10 @@ defmodule HLX.Writer.Variant do
           referenced_renditions
           |> Map.values()
           |> List.flatten()
-          |> Enum.flat_map(&Rendition.tracks(&1.rendition))
+          |> Enum.flat_map(&TracksMuxer.tracks(&1.tracks_muxer))
           |> Enum.map(& &1.mime)
 
-        tracks = Rendition.tracks(variant.rendition)
+        tracks = TracksMuxer.tracks(variant.tracks_muxer)
 
         codecs =
           tracks
@@ -164,7 +165,7 @@ defmodule HLX.Writer.Variant do
 
   defp generate_segment_name(variant) do
     extension =
-      case variant.rendition.muxer_mod do
+      case variant.tracks_muxer.muxer_mod do
         HLX.Muxer.TS -> "ts"
         HLX.Muxer.CMAF -> "m4s"
       end
