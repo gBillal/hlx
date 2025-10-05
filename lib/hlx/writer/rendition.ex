@@ -9,39 +9,31 @@ defmodule HLX.Writer.Rendition do
   @type t :: %__MODULE__{
           type: :rendition | :variant | nil,
           name: binary(),
-          playlist: HLX.MediaPlaylist.t(),
           tracks: %{non_neg_integer() => HLX.Track.t()},
           muxer_mod: module(),
           muxer_state: any() | nil,
           track_durations: %{non_neg_integer() => non_neg_integer()},
-          lead_track: non_neg_integer() | nil,
-          target_duration: non_neg_integer()
+          lead_track: non_neg_integer() | nil
         }
 
   defstruct [
     :type,
     :name,
-    :playlist,
     :tracks,
     :muxer_mod,
     :muxer_state,
     :track_durations,
-    :lead_track,
-    :target_duration
+    :lead_track
   ]
 
   @spec new(binary(), [HLX.Track.t()], keyword()) :: {:ok, t()} | {:error, any()}
   def new(name, tracks, opts) do
     with {:ok, tracks} <- validate_tracks(tracks) do
-      target_duration = Keyword.get(opts, :target_duration, 2_000)
-
       rendition = %__MODULE__{
         type: opts[:type],
         name: name,
-        playlist: HLX.MediaPlaylist.new(opts),
         tracks: tracks,
-        track_durations: init_track_durations(tracks),
-        target_duration: target_duration
+        track_durations: init_track_durations(tracks)
       }
 
       rendition
@@ -59,19 +51,11 @@ defmodule HLX.Writer.Rendition do
   @spec tracks(t()) :: [HLX.Track.t()]
   def tracks(%{tracks: tracks}), do: Map.values(tracks)
 
-  @spec save_init_header(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
-  def save_init_header(%{muxer_mod: TS} = rendition, storage), do: {rendition, storage}
+  @spec save_init_header(t()) :: iodata()
+  def save_init_header(%{muxer_mod: TS}), do: <<>>
 
-  def save_init_header(rendition, storage) do
-    data = rendition.muxer_mod.get_init_header(rendition.muxer_state)
-    {uri, storage} = HLX.Storage.store_init_header(rendition.name, "init.mp4", data, storage)
-
-    rendition = %{
-      rendition
-      | playlist: HLX.MediaPlaylist.add_init_header(rendition.playlist, uri)
-    }
-
-    {rendition, storage}
+  def save_init_header(rendition) do
+    rendition.muxer_mod.get_init_header(rendition.muxer_state)
   end
 
   @spec process_sample(t(), HLX.Sample.t()) :: {t(), HLX.Sample.t()}
@@ -107,36 +91,16 @@ defmodule HLX.Writer.Rendition do
     %{rendition | muxer_state: muxer_state, track_durations: track_durations}
   end
 
-  @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
-  def flush(rendition, storage) do
-    name = generate_segment_name(rendition)
+  @spec flush(t()) :: {iodata(), non_neg_integer(), t()}
+  def flush(rendition) do
     {data, muxer_state} = rendition.muxer_mod.flush_segment(rendition.muxer_state)
-    {uri, storage} = HLX.Storage.store_segment(rendition.name, name, data, storage)
 
-    segment =
-      %HLX.Segment{
-        uri: uri,
-        size: IO.iodata_length(data),
-        duration: segment_duration(rendition)
-      }
-
-    {playlist, storage} =
-      case HLX.MediaPlaylist.add_segment(rendition.playlist, segment) do
-        {playlist, nil} ->
-          {playlist, storage}
-
-        {playlist, discarded} ->
-          {playlist, HLX.Storage.delete_segment(rendition.name, discarded, storage)}
-      end
-
-    rendition = %{
-      rendition
-      | muxer_state: muxer_state,
-        playlist: playlist,
-        track_durations: init_track_durations(rendition.tracks)
-    }
-
-    {rendition, storage}
+    {data, segment_duration(rendition),
+     %{
+       rendition
+       | muxer_state: muxer_state,
+         track_durations: init_track_durations(rendition.tracks)
+     }}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]
@@ -149,20 +113,6 @@ defmodule HLX.Writer.Rendition do
   @spec group_id(t()) :: String.t() | nil
   def group_id(%{hls_tag: %Media{group_id: group_id}}), do: group_id
   def group_id(_rendition), do: nil
-
-  @spec bandwidth(t()) :: {non_neg_integer(), non_neg_integer()}
-  def bandwidth(%{playlist: playlist}), do: HLX.MediaPlaylist.bandwidth(playlist)
-
-  @spec generate_segment_name(t()) :: binary()
-  def generate_segment_name(rendition) do
-    extension =
-      case rendition.muxer_mod do
-        TS -> "ts"
-        CMAF -> "m4s"
-      end
-
-    "segment_#{HLX.MediaPlaylist.segment_count(rendition.playlist)}.#{extension}"
-  end
 
   defp validate_tracks(tracks) do
     Enum.reduce_while(tracks, {:ok, %{}}, fn track, {:ok, acc} ->

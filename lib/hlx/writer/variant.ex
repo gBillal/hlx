@@ -1,21 +1,24 @@
 defmodule HLX.Writer.Variant do
   @moduledoc false
 
-  alias HLX.SampleQueue
+  alias HLX.{MediaPlaylist, SampleQueue}
   alias HLX.Writer.{Rendition, StreamInfo}
 
   @type t :: %__MODULE__{
           id: String.t(),
+          playlist: MediaPlaylist.t(),
           rendition: Rendition.t(),
           queue: SampleQueue.t(),
           depends_on: String.t(),
           config: StreamInfo.t()
         }
 
-  defstruct [:id, :rendition, :queue, :depends_on, :config]
+  defstruct [:id, :rendition, :playlist, :queue, :depends_on, :config]
 
   @spec new(String.t(), Rendition.t(), keyword()) :: t()
   def new(id, rendition, config) do
+    playlist = MediaPlaylist.new(config)
+
     config = %StreamInfo{
       name: id,
       audio: config[:audio],
@@ -26,13 +29,20 @@ defmodule HLX.Writer.Variant do
       subtitles: config[:subtitles]
     }
 
-    %__MODULE__{id: id, rendition: rendition, config: config}
+    %__MODULE__{id: id, rendition: rendition, playlist: playlist, config: config}
   end
 
   @spec save_init_header(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
   def save_init_header(variant, storage) do
-    {rendition, storage} = Rendition.save_init_header(variant.rendition, storage)
-    {%{variant | rendition: rendition}, storage}
+    data = Rendition.save_init_header(variant.rendition)
+    {uri, storage} = HLX.Storage.store_init_header(variant.id, "init.mp4", data, storage)
+
+    variant = %{
+      variant
+      | playlist: MediaPlaylist.add_init_header(variant.playlist, uri)
+    }
+
+    {variant, storage}
   end
 
   @spec push_sample(t(), HLX.Sample.t()) :: t()
@@ -43,8 +53,27 @@ defmodule HLX.Writer.Variant do
 
   @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
   def flush(variant, storage) do
-    {rendition, storage} = Rendition.flush(variant.rendition, storage)
-    {%{variant | rendition: rendition}, storage}
+    name = generate_segment_name(variant)
+    {data, duration, rendition} = Rendition.flush(variant.rendition)
+    {uri, storage} = HLX.Storage.store_segment(variant.id, name, data, storage)
+
+    segment =
+      %HLX.Segment{
+        uri: uri,
+        size: IO.iodata_length(data),
+        duration: duration
+      }
+
+    {playlist, storage} =
+      case MediaPlaylist.add_segment(variant.playlist, segment) do
+        {playlist, nil} ->
+          {playlist, storage}
+
+        {playlist, discarded} ->
+          {playlist, HLX.Storage.delete_segment(variant.id, discarded, storage)}
+      end
+
+    {%{variant | rendition: rendition, playlist: playlist}, storage}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]
@@ -115,13 +144,13 @@ defmodule HLX.Writer.Variant do
           |> Map.values()
           |> Enum.map(fn variants ->
             variants
-            |> Enum.map(&Rendition.bandwidth(&1.rendition))
+            |> Enum.map(&bandwidth/1)
             |> Enum.unzip()
             |> then(fn {a, m} -> {Enum.max(a), Enum.max(m)} end)
           end)
           |> Enum.unzip()
 
-        {avg_band, max_band} = HLX.MediaPlaylist.bandwidth(variant.rendition.playlist)
+        {avg_band, max_band} = bandwidth(variant)
 
         %{
           StreamInfo.to_stream(variant.config)
@@ -132,4 +161,16 @@ defmodule HLX.Writer.Variant do
         }
     end
   end
+
+  defp generate_segment_name(variant) do
+    extension =
+      case variant.rendition.muxer_mod do
+        HLX.Muxer.TS -> "ts"
+        HLX.Muxer.CMAF -> "m4s"
+      end
+
+    "segment_#{MediaPlaylist.segment_count(variant.playlist)}.#{extension}"
+  end
+
+  defp bandwidth(%{playlist: playlist}), do: MediaPlaylist.bandwidth(playlist)
 end

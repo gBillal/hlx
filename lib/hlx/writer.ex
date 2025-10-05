@@ -149,11 +149,12 @@ defmodule HLX.Writer do
     rendition_options = [
       target_duration: 2000,
       segment_type: writer.segment_type,
-      max_segments: writer.max_segments
+      max_segments: writer.max_segments,
+      audio: options[:audio]
     ]
 
     with {:ok, rendition} <- Rendition.new(name, options[:tracks], rendition_options) do
-      variant = Variant.new(name, rendition, audio: options[:audio])
+      variant = Variant.new(name, rendition, rendition_options)
       writer = maybe_save_init_header(writer, variant)
 
       lead_variant =
@@ -319,7 +320,7 @@ defmodule HLX.Writer do
   defp serialize_playlists(%{variants: variants} = writer, end_list?) do
     {variants, storage} =
       Enum.map_reduce(variants, writer.storage, fn {_key, variant}, storage ->
-        playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.rendition.playlist)
+        playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.playlist)
 
         playlist = %{
           playlist
