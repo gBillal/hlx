@@ -34,6 +34,11 @@ defmodule HLX.Storage do
               {uri(), state()}
 
   @doc """
+  Callback invoked to store a part of a segment.
+  """
+  @callback store_part(playlist_name(), resource_name(), payload(), state()) :: {uri(), state()}
+
+  @doc """
   Callback invoked to delete a segment.
   """
   @callback delete_segment(playlist_name(), HLX.Segment.t(), state()) :: state()
@@ -76,6 +81,13 @@ defmodule HLX.Storage do
   @spec store_segment(playlist_name(), resource_name(), payload(), t()) :: {uri(), t()}
   def store_segment(playlist_name, resource_name, payload, storage) do
     {uri, state} = storage.mod.store_segment(playlist_name, resource_name, payload, storage.state)
+    {uri, %{storage | state: state}}
+  end
+
+  @doc false
+  @spec store_part(playlist_name(), resource_name(), payload(), t()) :: {uri(), t()}
+  def store_part(playlist_name, resource_name, payload, storage) do
+    {uri, state} = storage.mod.store_part(playlist_name, resource_name, payload, storage.state)
     {uri, %{storage | state: state}}
   end
 

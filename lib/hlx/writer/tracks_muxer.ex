@@ -56,13 +56,17 @@ defmodule HLX.Writer.TracksMuxer do
 
   @spec process_sample(t(), HLX.Sample.t()) :: {t(), HLX.Sample.t()}
   def process_sample(%{muxer_state: nil} = tracks_muxer, sample) do
-    track = tracks_muxer.tracks[sample.track_id]
-    sample = %{sample | dts: sample.dts || sample.pts}
-    {track, sample} = process_sample(track, sample, container(tracks_muxer.muxer_mod))
-    tracks = Map.put(tracks_muxer.tracks, track.id, track)
-    tracks_muxer = %{tracks_muxer | tracks: tracks}
+    {track, sample} =
+      tracks_muxer.tracks
+      |> Map.fetch!(sample.track_id)
+      |> process_sample(
+        %{sample | dts: sample.dts || sample.pts},
+        container(tracks_muxer.muxer_mod)
+      )
 
-    if all_tracks_ready?(tracks) do
+    tracks_muxer = %{tracks_muxer | tracks: Map.put(tracks_muxer.tracks, track.id, track)}
+
+    if all_tracks_ready?(tracks_muxer.tracks) do
       tracks_muxer
       |> maybe_init_muxer()
       |> then(&{&1, sample})
@@ -72,9 +76,14 @@ defmodule HLX.Writer.TracksMuxer do
   end
 
   def process_sample(tracks_muxer, sample) do
-    track = tracks_muxer.tracks[sample.track_id]
-    sample = %{sample | dts: sample.dts || sample.pts}
-    {_track, sample} = process_sample(track, sample, container(tracks_muxer.muxer_mod))
+    {_track, sample} =
+      tracks_muxer.tracks
+      |> Map.fetch!(sample.track_id)
+      |> process_sample(
+        %{sample | dts: sample.dts || sample.pts},
+        container(tracks_muxer.muxer_mod)
+      )
+
     {tracks_muxer, sample}
   end
 
@@ -83,8 +92,27 @@ defmodule HLX.Writer.TracksMuxer do
     track_id = sample.track_id
     muxer_state = tracks_muxer.muxer_mod.push(sample, tracks_muxer.muxer_state)
     track_durations = Map.update!(tracks_muxer.track_durations, track_id, &(&1 + sample.duration))
-
     %{tracks_muxer | muxer_state: muxer_state, track_durations: track_durations}
+  end
+
+  @spec push_part(t(), [{non_neg_integer(), [HLX.Sample.t()]}]) :: {iodata(), number(), t()}
+  def push_part(tracks_muxer, parts) do
+    {data, part_duration, muxer_state} =
+      tracks_muxer.muxer_mod.push_part(parts, tracks_muxer.muxer_state)
+
+    tracks_duration =
+      Map.new(parts, fn {track_id, samples} ->
+        part_duration = Enum.reduce(samples, 0, &(&1.duration + &2))
+        {track_id, tracks_muxer.track_durations[track_id] + part_duration}
+      end)
+
+    tracks_muxer = %{
+      tracks_muxer
+      | muxer_state: muxer_state,
+        track_durations: tracks_duration
+    }
+
+    {data, part_duration, tracks_muxer}
   end
 
   @spec flush(t()) :: {iodata(), non_neg_integer(), t()}
@@ -110,6 +138,7 @@ defmodule HLX.Writer.TracksMuxer do
 
   defp assign_muxer(tracks_muxer, :mpeg_ts), do: %{tracks_muxer | muxer_mod: TS}
   defp assign_muxer(tracks_muxer, :fmp4), do: %{tracks_muxer | muxer_mod: CMAF}
+  defp assign_muxer(tracks_muxer, :low_latency), do: %{tracks_muxer | muxer_mod: CMAF}
 
   defp maybe_init_muxer(%{tracks: tracks} = tracks_muxer) do
     if all_tracks_ready?(tracks) do

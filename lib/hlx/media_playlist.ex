@@ -1,6 +1,7 @@
 defmodule HLX.MediaPlaylist do
   @moduledoc false
 
+  alias ExM3U8.Tags.Part
   alias HLX.Segment
 
   @type t :: %__MODULE__{
@@ -9,7 +10,9 @@ defmodule HLX.MediaPlaylist do
           segment_count: non_neg_integer(),
           temp_init: String.t() | nil,
           sequence_number: non_neg_integer(),
-          discontinuity_number: non_neg_integer()
+          discontinuity_number: non_neg_integer(),
+          pending_segment: Segment.t() | nil,
+          part_target_duration: number() | nil
         }
 
   defstruct [
@@ -18,7 +21,9 @@ defmodule HLX.MediaPlaylist do
     :segment_count,
     :temp_init,
     :sequence_number,
-    :discontinuity_number
+    :discontinuity_number,
+    :pending_segment,
+    :part_target_duration
   ]
 
   @spec new(Keyword.t()) :: t()
@@ -36,10 +41,33 @@ defmodule HLX.MediaPlaylist do
   def add_init_header(state, uri), do: %{state | temp_init: uri}
 
   @spec add_segment(t(), Segment.t()) :: {t(), Segment.t() | nil}
-  def add_segment(%__MODULE__{} = state, segment) do
+  def add_segment(%__MODULE__{pending_segment: nil} = state, segment) do
     state
     |> do_add_segment(segment)
     |> delete_old_segment()
+  end
+
+  def add_segment(%__MODULE__{pending_segment: pending_segment} = state, segment) do
+    pending_segment = %{
+      pending_segment
+      | uri: segment.uri,
+        size: segment.size,
+        duration: segment.duration
+    }
+
+    add_segment(%{state | pending_segment: nil}, pending_segment)
+  end
+
+  @spec add_part(t(), String.t(), number()) :: t()
+  def add_part(playlist, part_uri, part_duration) do
+    segment = if playlist.pending_segment, do: playlist.pending_segment, else: %Segment{}
+    part = %Part{uri: part_uri, duration: part_duration, independent?: length(segment.parts) == 0}
+
+    %{
+      playlist
+      | pending_segment: %{segment | parts: segment.parts ++ [part]},
+        part_target_duration: max(playlist.part_target_duration || 0, part_duration)
+    }
   end
 
   @spec add_discontinuity(t()) :: t()
@@ -64,6 +92,11 @@ defmodule HLX.MediaPlaylist do
         segments
       )
 
+    timeline =
+      if state.pending_segment,
+        do: [Segment.hls_tag(state.pending_segment) | timeline],
+        else: timeline
+
     %ExM3U8.MediaPlaylist{
       timeline: Enum.reverse(timeline) |> List.flatten(),
       info: %ExM3U8.MediaPlaylist.Info{
@@ -71,7 +104,8 @@ defmodule HLX.MediaPlaylist do
         independent_segments: true,
         media_sequence: state.sequence_number,
         discontinuity_sequence: state.discontinuity_number,
-        target_duration: target_duration
+        target_duration: target_duration,
+        part_inf: state.part_target_duration
       }
     }
   end

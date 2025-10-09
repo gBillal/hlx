@@ -9,10 +9,19 @@ defmodule HLX.Segment do
           duration: number(),
           timestamp: DateTime.t() | nil,
           media_init: String.t() | nil,
-          discontinuity?: boolean()
+          discontinuity?: boolean(),
+          parts: [ExM3U8.Tags.Part.t()]
         }
 
-  defstruct [:uri, :size, :duration, :timestamp, :media_init, discontinuity?: false]
+  defstruct [
+    :uri,
+    :size,
+    :duration,
+    :timestamp,
+    :media_init,
+    discontinuity?: false,
+    parts: []
+  ]
 
   @spec new(Keyword.t()) :: t()
   def new(opts) do
@@ -24,12 +33,24 @@ defmodule HLX.Segment do
 
   @spec hls_tag(t()) :: [struct()]
   def hls_tag(segment) do
-    acc = if segment.discontinuity?, do: [%Tags.Discontinuity{}], else: []
-    acc = [%Tags.Segment{uri: segment.uri, duration: segment.duration} | acc]
-
-    acc =
-      if segment.timestamp, do: [%Tags.ProgramDateTime{date: segment.timestamp} | acc], else: acc
-
-    if segment.media_init, do: [%Tags.MediaInit{uri: segment.media_init} | acc], else: acc
+    [
+      [media_init_tag(segment.media_init), program_date_time_tag(segment.timestamp)],
+      segment.parts,
+      [segment_tag(segment.uri, segment.duration), discontinuity_tag(segment.discontinuity?)]
+    ]
+    |> Enum.concat()
+    |> Enum.reject(&is_nil/1)
   end
+
+  defp media_init_tag(nil), do: nil
+  defp media_init_tag(uri), do: %Tags.MediaInit{uri: uri}
+
+  defp program_date_time_tag(nil), do: nil
+  defp program_date_time_tag(date), do: %Tags.ProgramDateTime{date: date}
+
+  defp segment_tag(nil, _duration), do: nil
+  defp segment_tag(uri, duration), do: %Tags.Segment{uri: uri, duration: duration}
+
+  defp discontinuity_tag(false), do: nil
+  defp discontinuity_tag(true), do: %Tags.Discontinuity{}
 end

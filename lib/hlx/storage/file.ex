@@ -36,6 +36,13 @@ defmodule HLX.Storage.File do
   end
 
   @impl true
+  def store_part(playlist_name, resource_name, payload, state) do
+    uri = Path.join([playlist_name, resource_name])
+    store_data(path(state, uri), payload)
+    {uri, state}
+  end
+
+  @impl true
   def delete_segment(_playlist_name, segment, state) do
     File.rm(path(state, segment.uri))
     if segment.media_init, do: File.rm(path(state, segment.media_init))

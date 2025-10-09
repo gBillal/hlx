@@ -1,7 +1,7 @@
 defmodule HLX.Writer.Variant do
   @moduledoc false
 
-  alias HLX.{MediaPlaylist, SampleQueue}
+  alias HLX.{MediaPlaylist, PartQueue, SampleQueue}
   alias HLX.Writer.{StreamInfo, TracksMuxer}
 
   @type t :: %__MODULE__{
@@ -9,11 +9,12 @@ defmodule HLX.Writer.Variant do
           playlist: MediaPlaylist.t(),
           tracks_muxer: TracksMuxer.t(),
           queue: SampleQueue.t(),
-          depends_on: String.t(),
-          config: StreamInfo.t()
+          depends_on: String.t() | nil,
+          config: StreamInfo.t(),
+          part_queue: PartQueue.t() | nil
         }
 
-  defstruct [:id, :tracks_muxer, :playlist, :queue, :depends_on, :config]
+  defstruct [:id, :tracks_muxer, :playlist, :queue, :depends_on, :config, :part_queue]
 
   @spec new(String.t(), TracksMuxer.t(), keyword()) :: t()
   def new(id, tracks_muxer, config) do
@@ -46,10 +47,28 @@ defmodule HLX.Writer.Variant do
     {variant, storage}
   end
 
+  @spec process_sample(t(), HLX.Sample.t()) :: {HLX.Sample.t(), t()}
+  def process_sample(variant, sample) do
+    {tracks_muxer, sample} = TracksMuxer.process_sample(variant.tracks_muxer, sample)
+    {sample, %{variant | tracks_muxer: tracks_muxer}}
+  end
+
   @spec push_sample(t(), HLX.Sample.t()) :: t()
   def push_sample(variant, sample) do
     tracks_muxer = TracksMuxer.push_sample(variant.tracks_muxer, sample)
     %{variant | tracks_muxer: tracks_muxer}
+  end
+
+  @spec push_parts(t(), [{non_neg_integer(), [HLX.Sample.t()]}], HLX.Storage.t()) :: t()
+  def push_parts(variant, parts, storage) do
+    {data, duration, tracks_muxer} = TracksMuxer.push_part(variant.tracks_muxer, parts)
+
+    {uri, storage} =
+      HLX.Storage.store_part(variant.id, generate_part_name(variant.playlist), data, storage)
+
+    playlist = MediaPlaylist.add_part(variant.playlist, uri, duration)
+
+    {%{variant | tracks_muxer: tracks_muxer, playlist: playlist}, storage}
   end
 
   @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
@@ -98,6 +117,9 @@ defmodule HLX.Writer.Variant do
         &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
       )
 
+    part_queue =
+      Enum.reduce(tracks, PartQueue.new(250), &PartQueue.add_track(&2, variant.id, &1))
+
     sample_queue =
       Enum.reduce(dependant_variants, sample_queue, fn variant, queue ->
         variant.tracks_muxer
@@ -108,7 +130,7 @@ defmodule HLX.Writer.Variant do
         )
       end)
 
-    %{variant | queue: sample_queue}
+    %{variant | queue: sample_queue, part_queue: part_queue}
   end
 
   @spec to_hls_tag(t(), %{String.t() => t()}) :: struct()
@@ -171,6 +193,11 @@ defmodule HLX.Writer.Variant do
       end
 
     "segment_#{MediaPlaylist.segment_count(variant.playlist)}.#{extension}"
+  end
+
+  defp generate_part_name(playlist) do
+    part_index = if playlist.pending_segment, do: length(playlist.pending_segment.parts), else: 0
+    "segment_#{MediaPlaylist.segment_count(playlist)}_part_#{part_index}.m4s"
   end
 
   defp bandwidth(%{playlist: playlist}), do: MediaPlaylist.bandwidth(playlist)

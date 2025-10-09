@@ -141,7 +141,7 @@ defmodule HLX.SampleQueue do
 
   defp flush?(sample_queue) do
     Enum.all?(sample_queue.tracks, fn {id, track} ->
-      id == sample_queue.lead_track or track.queue_size > 0
+      track.queue_size > 0 or id == sample_queue.lead_track
     end)
   end
 

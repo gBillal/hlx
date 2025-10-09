@@ -3,11 +3,12 @@ defmodule HLX.Writer do
   Module for writing HLS master and media playlists.
   """
 
+  alias HLX.PartQueue
   alias HLX.SampleQueue
   alias HLX.Writer.{TracksMuxer, Variant}
 
   @type mode :: :live | :vod
-  @type segment_type :: :mpeg_ts | :fmp4
+  @type segment_type :: :mpeg_ts | :fmp4 | :low_latency
   @type tracks :: [HLX.Track.t()]
   @type rendition_opts :: [
           {:type, :audio}
@@ -229,11 +230,10 @@ defmodule HLX.Writer do
     variant = Map.fetch!(writer.variants, variant_id)
     ready? = TracksMuxer.ready?(variant.tracks_muxer)
 
-    {tracks_muxer, sample} = TracksMuxer.process_sample(variant.tracks_muxer, sample)
-    variant = %{variant | tracks_muxer: tracks_muxer}
+    {sample, variant} = Variant.process_sample(variant, sample)
 
     writer =
-      if not ready? and TracksMuxer.ready?(tracks_muxer),
+      if not ready? and TracksMuxer.ready?(variant.tracks_muxer),
         do: maybe_save_init_header(writer, variant),
         else: %{writer | variants: Map.put(writer.variants, variant.id, variant)}
 
@@ -245,25 +245,72 @@ defmodule HLX.Writer do
 
     id = {variant_id, sample.track_id}
 
-    case SampleQueue.push_sample(queue_variant.queue, id, sample) do
-      {true, samples, queue} ->
-        writer = flush_and_write(writer, SampleQueue.track_ids(queue))
+    if writer.segment_type == :low_latency,
+      do: handle_part_queue(writer, queue_variant, id, sample),
+      else: handle_sample_queue(writer, queue_variant, id, sample)
+  end
 
-        variants =
-          samples
-          |> push_samples(writer.variants)
-          |> Map.update!(queue_variant.id, &%{&1 | queue: queue})
+  defp handle_sample_queue(writer, queue_variant, id, sample) do
+    {flush?, samples, queue} = SampleQueue.push_sample(queue_variant.queue, id, sample)
 
-        serialize_playlists(%{writer | variants: variants})
+    writer = if flush?, do: flush_and_write(writer, SampleQueue.track_ids(queue)), else: writer
 
-      {false, samples, queue} ->
-        variants =
-          samples
-          |> push_samples(writer.variants)
-          |> Map.update!(queue_variant.id, &%{&1 | queue: queue})
+    variants =
+      samples
+      |> push_samples(writer.variants)
+      |> Map.update!(queue_variant.id, &%{&1 | queue: queue})
 
-        %{writer | variants: variants}
-    end
+    if flush?,
+      do: serialize_playlists(%{writer | variants: variants}),
+      else: %{writer | variants: variants}
+  end
+
+  defp handle_part_queue(writer, queue_variant, id, sample) do
+    {flush?, samples, queue} = SampleQueue.push_sample(queue_variant.queue, id, sample)
+
+    {writer, part_queue} =
+      if flush? do
+        {parts, part_queue} = PartQueue.flush(queue_variant.part_queue)
+
+        writer =
+          parts
+          |> push_parts(writer)
+          |> flush_and_write(SampleQueue.track_ids(queue))
+
+        {writer, part_queue}
+      else
+        {writer, queue_variant.part_queue}
+      end
+
+    {parts, part_queue} =
+      Enum.map_reduce(samples, part_queue, fn {id, sample}, queue ->
+        PartQueue.push_sample(queue, id, sample)
+      end)
+
+    variants =
+      Map.update!(
+        writer.variants,
+        queue_variant.id,
+        &%{&1 | part_queue: part_queue, queue: queue}
+      )
+
+    writer = push_parts(Enum.concat(parts), %{writer | variants: variants})
+
+    if flush? or parts != [],
+      do: serialize_playlists(writer),
+      else: writer
+  end
+
+  defp push_parts(parts, writer) do
+    parts
+    |> Enum.group_by(
+      fn {{variant_id, _track_id}, _samples} -> variant_id end,
+      fn {{_variant_id, track_id}, samples} -> {track_id, samples} end
+    )
+    |> Enum.reduce(writer, fn {variant_id, parts}, writer ->
+      {variant, storage} = Variant.push_parts(writer.variants[variant_id], parts, writer.storage)
+      %{writer | storage: storage, variants: Map.put(writer.variants, variant_id, variant)}
+    end)
   end
 
   @doc """
@@ -391,7 +438,8 @@ defmodule HLX.Writer do
     do_validate_writer_option(rest)
   end
 
-  defp do_validate_writer_option([{:segment_type, type} | rest]) when type in [:mpeg_ts, :fmp4] do
+  defp do_validate_writer_option([{:segment_type, type} | rest])
+       when type in [:mpeg_ts, :fmp4, :low_latency] do
     do_validate_writer_option(rest)
   end
 
