@@ -116,9 +116,6 @@ defmodule HLX.Writer.Variant do
         &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
       )
 
-    part_queue =
-      Enum.reduce(tracks, PartQueue.new(250), &PartQueue.add_track(&2, variant.id, &1))
-
     sample_queue =
       Enum.reduce(dependant_variants, sample_queue, fn variant, queue ->
         variant.tracks_muxer
@@ -127,6 +124,15 @@ defmodule HLX.Writer.Variant do
           queue,
           &SampleQueue.add_track(&2, {variant.id, &1.id}, false, &1.timescale)
         )
+      end)
+
+    part_queue =
+      [variant | dependant_variants]
+      |> Enum.flat_map(
+        &Enum.map(TracksMuxer.tracks(&1.tracks_muxer), fn track -> {&1.id, track} end)
+      )
+      |> Enum.reduce(PartQueue.new(250), fn {id, track}, queue ->
+        PartQueue.add_track(queue, id, track)
       end)
 
     %{variant | queue: sample_queue, part_queue: part_queue}

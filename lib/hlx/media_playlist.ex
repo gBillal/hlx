@@ -108,7 +108,12 @@ defmodule HLX.MediaPlaylist do
         media_sequence: state.sequence_number,
         discontinuity_sequence: state.discontinuity_number,
         target_duration: target_duration,
-        part_inf: state.part_target_duration
+        part_inf: state.part_target_duration,
+        server_control: %ExM3U8.MediaPlaylist.ServerControl{
+          can_block_reload?: false,
+          hold_back: target_duration * 3,
+          part_hold_back: state.part_target_duration && state.part_target_duration * 3
+        }
       }
     }
   end
