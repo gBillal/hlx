@@ -73,8 +73,13 @@ defmodule HLX.PartQueue do
   def flush(part_queue) do
     {parts_data, parts} =
       Enum.map_reduce(part_queue.parts, part_queue.parts, fn {track_id, part_ctx}, acc ->
-        part_data = Enum.reverse(part_ctx.samples)
-        part_ctx = %{part_ctx | duration: 0, samples: []}
+        {part_data, queue} =
+          case part_ctx.queue_size do
+            0 -> {Enum.reverse(part_ctx.samples), part_ctx.queue}
+            _ -> Qex.pop!(part_ctx.queue)
+          end
+
+        part_ctx = %{part_ctx | duration: 0, samples: [], queue: queue, queue_size: 0}
         {{track_id, part_data}, Map.put(acc, track_id, part_ctx)}
       end)
 

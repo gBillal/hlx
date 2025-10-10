@@ -35,7 +35,7 @@ defmodule HLX.Segment do
   def hls_tag(segment) do
     [
       [media_init_tag(segment.media_init), program_date_time_tag(segment.timestamp)],
-      segment.parts,
+      Enum.reverse(segment.parts),
       [segment_tag(segment.uri, segment.duration), discontinuity_tag(segment.discontinuity?)]
     ]
     |> Enum.concat()

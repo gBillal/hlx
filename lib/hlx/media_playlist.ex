@@ -5,7 +5,7 @@ defmodule HLX.MediaPlaylist do
   alias HLX.Segment
 
   @type t :: %__MODULE__{
-          segments: :queue.queue(Segment.t()),
+          segments: Qex.t(Segment.t()),
           max_segments: non_neg_integer(),
           segment_count: non_neg_integer(),
           temp_init: String.t() | nil,
@@ -29,7 +29,7 @@ defmodule HLX.MediaPlaylist do
   @spec new(Keyword.t()) :: t()
   def new(opts) do
     %__MODULE__{
-      segments: :queue.new(),
+      segments: Qex.new(),
       max_segments: Keyword.get(opts, :max_segments, 0),
       segment_count: 0,
       discontinuity_number: 0,
@@ -65,7 +65,7 @@ defmodule HLX.MediaPlaylist do
 
     %{
       playlist
-      | pending_segment: %{segment | parts: segment.parts ++ [part]},
+      | pending_segment: %{segment | parts: [part | segment.parts]},
         part_target_duration: max(playlist.part_target_duration || 0, part_duration)
     }
   end
@@ -83,14 +83,10 @@ defmodule HLX.MediaPlaylist do
   @spec to_m3u8_playlist(t()) :: ExM3U8.MediaPlaylist.t()
   def to_m3u8_playlist(%__MODULE__{segments: segments} = state) do
     {timeline, target_duration} =
-      :queue.fold(
-        fn segment, {acc, target_duration} ->
-          acc = [Segment.hls_tag(segment) | acc]
-          {acc, max(target_duration, round(segment.duration))}
-        end,
-        {[], 0},
-        segments
-      )
+      Enum.reduce(segments, {[], 0}, fn segment, {acc, target_duraiton} ->
+        acc = [Segment.hls_tag(segment) | acc]
+        {acc, max(target_duraiton, round(segment.duration))}
+      end)
 
     timeline =
       if state.pending_segment,
@@ -115,14 +111,10 @@ defmodule HLX.MediaPlaylist do
 
   def bandwidth(%{segments: segments}) do
     {size, duration, max_bitrate} =
-      :queue.fold(
-        fn segment, {size, duration, max_bitrate} ->
-          {size + segment.size, duration + segment.duration,
-           max(max_bitrate, Segment.bitrate(segment))}
-        end,
-        {0, 0, 0},
-        segments
-      )
+      Enum.reduce(segments, {0, 0, 0}, fn segment, {size, duration, max_bitrate} ->
+        {size + segment.size, duration + segment.duration,
+         max(max_bitrate, Segment.bitrate(segment))}
+      end)
 
     {trunc(size * 8 / duration), max_bitrate}
   end
@@ -138,7 +130,7 @@ defmodule HLX.MediaPlaylist do
         {segment, state}
       end
 
-    %{state | segments: :queue.in(segment, segments), segment_count: state.segment_count + 1}
+    %{state | segments: Qex.push(segments, segment), segment_count: state.segment_count + 1}
   end
 
   defp delete_old_segment(%{max_segments: 0} = state), do: {state, nil}
@@ -146,8 +138,8 @@ defmodule HLX.MediaPlaylist do
   defp delete_old_segment(state) when state.segment_count <= state.max_segments, do: {state, nil}
 
   defp delete_old_segment(%{segments: segments} = state) do
-    {{:value, discarded_segment}, segments} = :queue.out(segments)
-    {{:value, oldest_segment}, segments} = :queue.out(segments)
+    {discarded_segment, segments} = Qex.pop!(segments)
+    {oldest_segment, segments} = Qex.pop!(segments)
 
     discontinuity_number =
       state.discontinuity_number + if oldest_segment.discontinuity?, do: 1, else: 0
@@ -167,7 +159,7 @@ defmodule HLX.MediaPlaylist do
 
     {%{
        state
-       | segments: :queue.in_r(oldest_segment, segments),
+       | segments: Qex.push_front(segments, oldest_segment),
          segment_count: state.segment_count - 1,
          sequence_number: state.sequence_number + 1,
          discontinuity_number: discontinuity_number
