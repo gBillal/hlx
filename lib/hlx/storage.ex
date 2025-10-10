@@ -43,6 +43,11 @@ defmodule HLX.Storage do
   """
   @callback delete_segment(playlist_name(), HLX.Segment.t(), state()) :: state()
 
+  @doc """
+  Callback invoked to generate the path for a resource.
+  """
+  @callback path(playlist_name(), resource_name(), state()) :: String.t()
+
   @optional_callbacks store_init_header: 4
 
   @opaque t :: %__MODULE__{
@@ -96,5 +101,11 @@ defmodule HLX.Storage do
   def delete_segment(playlist_name, segment, storage) do
     new_state = storage.mod.delete_segment(playlist_name, segment, storage.state)
     %{storage | state: new_state}
+  end
+
+  @doc false
+  @spec path(playlist_name(), resource_name(), t()) :: String.t()
+  def path(playlist_name, resource_name, storage) do
+    storage.mod.path(playlist_name, resource_name, storage.state)
   end
 end

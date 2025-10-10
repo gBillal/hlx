@@ -80,8 +80,8 @@ defmodule HLX.MediaPlaylist do
     state
   end
 
-  @spec to_m3u8_playlist(t()) :: ExM3U8.MediaPlaylist.t()
-  def to_m3u8_playlist(%__MODULE__{segments: segments} = state) do
+  @spec to_m3u8(t(), keyword()) :: ExM3U8.MediaPlaylist.t()
+  def to_m3u8(%__MODULE__{segments: segments} = state, opts \\ []) do
     {timeline, target_duration} =
       Enum.reduce(segments, {[], 0}, fn segment, {acc, target_duraiton} ->
         acc = [Segment.hls_tag(segment) | acc]
@@ -93,10 +93,17 @@ defmodule HLX.MediaPlaylist do
         do: [Segment.hls_tag(state.pending_segment) | timeline],
         else: timeline
 
+    timeline =
+      case opts[:preload_hint] do
+        {type, uri} -> [%ExM3U8.Tags.PreloadHint{type: type, uri: uri} | timeline]
+        _ -> timeline
+      end
+
     %ExM3U8.MediaPlaylist{
       timeline: Enum.reverse(timeline) |> List.flatten(),
       info: %ExM3U8.MediaPlaylist.Info{
-        version: 7,
+        version: Keyword.get(opts, :version, 7),
+        playlist_type: Keyword.get(opts, :playlist_type),
         independent_segments: true,
         media_sequence: state.sequence_number,
         discontinuity_sequence: state.discontinuity_number,

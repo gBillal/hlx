@@ -49,7 +49,7 @@ defmodule HLX.Muxer.CMAF do
   end
 
   @impl true
-  def push_part(parts, state) do
+  def push_parts(parts, state) do
     moof = %Box.Moof{mfhd: %Box.Mfhd{sequence_number: 0}}
     mdat = %Box.Mdat{content: []}
 

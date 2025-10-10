@@ -363,16 +363,17 @@ defmodule HLX.Writer do
   defp serialize_playlists(%{variants: variants} = writer, end_list?) do
     {variants, storage} =
       Enum.map_reduce(variants, writer.storage, fn {_key, variant}, storage ->
-        playlist = HLX.MediaPlaylist.to_m3u8_playlist(variant.playlist)
+        preload_hint =
+          if not end_list? and writer.segment_type == :low_latency do
+            {:part, HLX.Storage.path(variant.id, Variant.next_part_name(variant), writer.storage)}
+          end
 
-        playlist = %{
-          playlist
-          | info: %{
-              playlist.info
-              | version: writer.version,
-                playlist_type: if(writer.mode == :vod, do: :vod)
-            }
-        }
+        playlist =
+          HLX.MediaPlaylist.to_m3u8(variant.playlist,
+            version: writer.version,
+            playlist_type: if(writer.mode == :vod, do: :vod),
+            preload_hint: preload_hint
+          )
 
         playlist = ExM3U8.serialize(playlist)
         playlist = if end_list?, do: playlist <> "#EXT-X-ENDLIST\n", else: playlist

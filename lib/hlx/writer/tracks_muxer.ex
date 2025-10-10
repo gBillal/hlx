@@ -5,6 +5,9 @@ defmodule HLX.Writer.TracksMuxer do
 
   alias HLX.Muxer.{CMAF, TS}
 
+  @type part :: {non_neg_integer(), [HLX.Sample.t()]}
+  @type parts :: [part()]
+
   @type t :: %__MODULE__{
           name: binary(),
           tracks: %{non_neg_integer() => HLX.Track.t()},
@@ -95,10 +98,10 @@ defmodule HLX.Writer.TracksMuxer do
     %{tracks_muxer | muxer_state: muxer_state, track_durations: track_durations}
   end
 
-  @spec push_part(t(), [{non_neg_integer(), [HLX.Sample.t()]}]) :: {iodata(), number(), t()}
-  def push_part(tracks_muxer, parts) do
+  @spec push_parts(t(), parts()) :: {iodata(), number(), t()}
+  def push_parts(tracks_muxer, parts) do
     {data, part_duration, muxer_state} =
-      tracks_muxer.muxer_mod.push_part(parts, tracks_muxer.muxer_state)
+      tracks_muxer.muxer_mod.push_parts(parts, tracks_muxer.muxer_state)
 
     tracks_duration =
       Map.new(parts, fn {track_id, samples} ->

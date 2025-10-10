@@ -59,13 +59,12 @@ defmodule HLX.Writer.Variant do
     %{variant | tracks_muxer: tracks_muxer}
   end
 
-  @spec push_parts(t(), [{non_neg_integer(), [HLX.Sample.t()]}], HLX.Storage.t()) :: t()
+  @spec push_parts(t(), TracksMuxer.parts(), HLX.Storage.t()) :: t()
   def push_parts(variant, parts, storage) do
-    {data, duration, tracks_muxer} = TracksMuxer.push_part(variant.tracks_muxer, parts)
+    part_name = generate_part_name(variant.playlist)
 
-    {uri, storage} =
-      HLX.Storage.store_part(variant.id, generate_part_name(variant.playlist), data, storage)
-
+    {data, duration, tracks_muxer} = TracksMuxer.push_parts(variant.tracks_muxer, parts)
+    {uri, storage} = HLX.Storage.store_part(variant.id, part_name, data, storage)
     playlist = MediaPlaylist.add_part(variant.playlist, uri, duration)
 
     {%{variant | tracks_muxer: tracks_muxer, playlist: playlist}, storage}
@@ -185,6 +184,16 @@ defmodule HLX.Writer.Variant do
     end
   end
 
+  @spec next_part_name(t()) :: String.t()
+  def next_part_name(%{playlist: playlist}) do
+    seg_count = MediaPlaylist.segment_count(playlist)
+
+    case playlist.pending_segment do
+      nil -> part_name(seg_count, 0)
+      _ -> part_name(seg_count, length(playlist.pending_segment.parts))
+    end
+  end
+
   defp generate_segment_name(variant) do
     extension =
       case variant.tracks_muxer.muxer_mod do
@@ -197,8 +206,10 @@ defmodule HLX.Writer.Variant do
 
   defp generate_part_name(playlist) do
     part_index = if playlist.pending_segment, do: length(playlist.pending_segment.parts), else: 0
-    "segment_#{MediaPlaylist.segment_count(playlist)}_part_#{part_index}.m4s"
+    part_name(MediaPlaylist.segment_count(playlist), part_index)
   end
+
+  defp part_name(segment, part), do: "segment_#{segment}_part_#{part}.m4s"
 
   defp bandwidth(%{playlist: playlist}), do: MediaPlaylist.bandwidth(playlist)
 end

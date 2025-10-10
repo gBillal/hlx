@@ -49,6 +49,9 @@ defmodule HLX.Storage.File do
     state
   end
 
+  @impl true
+  def path(playlist_name, resource_name, state), do: Path.join([playlist_name, resource_name])
+
   defp store_data(path, data) do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, data)
