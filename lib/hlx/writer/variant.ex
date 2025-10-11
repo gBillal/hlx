@@ -1,20 +1,18 @@
 defmodule HLX.Writer.Variant do
   @moduledoc false
 
-  alias HLX.{MediaPlaylist, PartQueue, SampleQueue}
+  alias HLX.MediaPlaylist
   alias HLX.Writer.{StreamInfo, TracksMuxer}
 
   @type t :: %__MODULE__{
           id: String.t(),
           playlist: MediaPlaylist.t(),
           tracks_muxer: TracksMuxer.t(),
-          queue: SampleQueue.t(),
           depends_on: String.t() | nil,
-          config: StreamInfo.t(),
-          part_queue: PartQueue.t() | nil
+          config: StreamInfo.t()
         }
 
-  defstruct [:id, :tracks_muxer, :playlist, :queue, :depends_on, :config, :part_queue]
+  defstruct [:id, :tracks_muxer, :playlist, :depends_on, :config]
 
   @spec new(String.t(), TracksMuxer.t(), keyword()) :: t()
   def new(id, tracks_muxer, config) do
@@ -102,41 +100,6 @@ defmodule HLX.Writer.Variant do
 
   @spec group_id(t()) :: String.t() | nil
   def group_id(%{config: config}), do: config.group_id
-
-  @spec create_sample_queue(t()) :: t()
-  @spec create_sample_queue(t(), [t()]) :: t()
-  def create_sample_queue(%{tracks_muxer: tracks_muxer} = variant, dependant_variants \\ []) do
-    tracks = TracksMuxer.tracks(tracks_muxer)
-    lead_track = tracks_muxer.lead_track || hd(tracks).id
-
-    sample_queue =
-      Enum.reduce(
-        tracks,
-        SampleQueue.new(2000),
-        &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
-      )
-
-    sample_queue =
-      Enum.reduce(dependant_variants, sample_queue, fn variant, queue ->
-        variant.tracks_muxer
-        |> TracksMuxer.tracks()
-        |> Enum.reduce(
-          queue,
-          &SampleQueue.add_track(&2, {variant.id, &1.id}, false, &1.timescale)
-        )
-      end)
-
-    part_queue =
-      [variant | dependant_variants]
-      |> Enum.flat_map(
-        &Enum.map(TracksMuxer.tracks(&1.tracks_muxer), fn track -> {&1.id, track} end)
-      )
-      |> Enum.reduce(PartQueue.new(250), fn {id, track}, queue ->
-        PartQueue.add_track(queue, id, track)
-      end)
-
-    %{variant | queue: sample_queue, part_queue: part_queue}
-  end
 
   @spec to_hls_tag(t(), %{String.t() => t()}) :: struct()
   def to_hls_tag(variant, referenced_renditions) do

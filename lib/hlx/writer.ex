@@ -3,8 +3,7 @@ defmodule HLX.Writer do
   Module for writing HLS master and media playlists.
   """
 
-  alias HLX.PartQueue
-  alias HLX.SampleQueue
+  alias HLX.{PartQueue, SampleQueue}
   alias HLX.Writer.{TracksMuxer, Variant}
 
   @type mode :: :live | :vod
@@ -36,6 +35,7 @@ defmodule HLX.Writer do
             max_segments: non_neg_integer(),
             lead_variant: String.t() | nil,
             variants: %{String.t() => Variant.t()},
+            queues: %{String.t() => {SampleQueue.t(), PartQueue.t() | nil}},
             state: :init | :muxing | :closed
           }
 
@@ -48,6 +48,7 @@ defmodule HLX.Writer do
     :max_segments,
     :lead_variant,
     variants: %{},
+    queues: %{},
     state: :init
   ]
 
@@ -185,15 +186,15 @@ defmodule HLX.Writer do
       cond do
         writer.type == :media ->
           [{id, variant}] = Map.to_list(writer.variants)
-          %{writer | variants: Map.put(writer.variants, id, Variant.create_sample_queue(variant))}
+          %{writer | queues: Map.put(writer.queues, id, create_queues(writer, variant))}
 
         is_nil(writer.lead_variant) ->
-          variants =
+          queues =
             Map.new(writer.variants, fn {id, variant} ->
-              {id, Variant.create_sample_queue(variant)}
+              {id, create_queues(writer, variant)}
             end)
 
-          %{writer | variants: variants}
+          %{writer | queues: queues}
 
         true ->
           lead_variant_id = writer.lead_variant
@@ -205,22 +206,18 @@ defmodule HLX.Writer do
               &(&1.config.type == :rendition or is_nil(&1.tracks_muxer.lead_track))
             )
 
-          variants =
-            Enum.reduce(independant_variants, writer.variants, fn variant, variants ->
+          queues =
+            Map.new(independant_variants, fn variant ->
               extra_variants = if variant.id == lead_variant_id, do: dependant_variants, else: []
-
-              Map.put(
-                variants,
-                variant.id,
-                Variant.create_sample_queue(variant, extra_variants)
-              )
+              {variant.id, create_queues(writer, variant, extra_variants)}
             end)
 
-          dependant_variants
-          |> Enum.reduce(variants, fn variant, variants ->
-            Map.update!(variants, variant.id, &%{&1 | depends_on: lead_variant_id})
-          end)
-          |> then(&%{writer | variants: &1})
+          variants =
+            Enum.reduce(dependant_variants, writer.variants, fn variant, variants ->
+              Map.update!(variants, variant.id, &%{&1 | depends_on: lead_variant_id})
+            end)
+
+          %{writer | variants: variants, queues: queues}
       end
 
     write_sample(%{writer | state: :muxing}, variant_id, sample)
@@ -237,40 +234,41 @@ defmodule HLX.Writer do
         do: maybe_save_init_header(writer, variant),
         else: %{writer | variants: Map.put(writer.variants, variant.id, variant)}
 
-    queue_variant =
+    {sample_queue, part_queue} =
       case variant.depends_on do
-        nil -> variant
-        id -> writer.variants[id]
+        nil -> writer.queues[variant_id]
+        id -> writer.queues[id]
       end
 
     id = {variant_id, sample.track_id}
 
-    if writer.segment_type == :low_latency,
-      do: handle_part_queue(writer, queue_variant, id, sample),
-      else: handle_sample_queue(writer, queue_variant, id, sample)
+    if part_queue,
+      do: handle_part_queue(writer, {sample_queue, part_queue}, id, sample),
+      else: handle_sample_queue(writer, sample_queue, id, sample)
   end
 
-  defp handle_sample_queue(writer, queue_variant, id, sample) do
-    {flush?, samples, queue} = SampleQueue.push_sample(queue_variant.queue, id, sample)
+  defp handle_sample_queue(writer, sample_queue, id, sample) do
+    {flush?, samples, queue} = SampleQueue.push_sample(sample_queue, id, sample)
 
     writer = if flush?, do: flush_and_write(writer, SampleQueue.track_ids(queue)), else: writer
 
-    variants =
-      samples
-      |> push_samples(writer.variants)
-      |> Map.update!(queue_variant.id, &%{&1 | queue: queue})
+    writer = %{
+      writer
+      | variants: push_samples(samples, writer.variants),
+        queues: Map.put(writer.queues, queue.id, {queue, nil})
+    }
 
     if flush?,
-      do: serialize_playlists(%{writer | variants: variants}),
-      else: %{writer | variants: variants}
+      do: serialize_playlists(writer),
+      else: writer
   end
 
-  defp handle_part_queue(writer, queue_variant, id, sample) do
-    {flush?, samples, queue} = SampleQueue.push_sample(queue_variant.queue, id, sample)
+  defp handle_part_queue(writer, {sample_queue, part_queue}, id, sample) do
+    {flush?, samples, queue} = SampleQueue.push_sample(sample_queue, id, sample)
 
     {writer, part_queue} =
       if flush? do
-        {parts, part_queue} = PartQueue.flush(queue_variant.part_queue)
+        {parts, part_queue} = PartQueue.flush(part_queue)
 
         writer =
           parts
@@ -279,7 +277,7 @@ defmodule HLX.Writer do
 
         {writer, part_queue}
       else
-        {writer, queue_variant.part_queue}
+        {writer, part_queue}
       end
 
     {parts, part_queue} =
@@ -287,14 +285,8 @@ defmodule HLX.Writer do
         PartQueue.push_sample(queue, id, sample)
       end)
 
-    variants =
-      Map.update!(
-        writer.variants,
-        queue_variant.id,
-        &%{&1 | part_queue: part_queue, queue: queue}
-      )
-
-    writer = push_parts(Enum.concat(parts), %{writer | variants: variants})
+    writer = %{writer | queues: Map.put(writer.queues, queue.id, {queue, part_queue})}
+    writer = push_parts(Enum.concat(parts), writer)
 
     if flush? or parts != [],
       do: serialize_playlists(writer),
@@ -405,6 +397,41 @@ defmodule HLX.Writer do
       })
 
     HLX.Storage.store_master_playlist(payload, writer.storage)
+  end
+
+  defp create_queues(writer, variant, dependant_variants \\ []) do
+    tracks = TracksMuxer.tracks(variant.tracks_muxer)
+    lead_track = variant.tracks_muxer.lead_track || hd(tracks).id
+
+    sample_queue =
+      Enum.reduce(
+        tracks,
+        SampleQueue.new(variant.id, 2000),
+        &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
+      )
+
+    sample_queue =
+      Enum.reduce(dependant_variants, sample_queue, fn variant, queue ->
+        variant.tracks_muxer
+        |> TracksMuxer.tracks()
+        |> Enum.reduce(
+          queue,
+          &SampleQueue.add_track(&2, {variant.id, &1.id}, false, &1.timescale)
+        )
+      end)
+
+    part_queue =
+      if writer.segment_type == :low_latency do
+        [variant | dependant_variants]
+        |> Enum.flat_map(
+          &Enum.map(TracksMuxer.tracks(&1.tracks_muxer), fn track -> {&1.id, track} end)
+        )
+        |> Enum.reduce(PartQueue.new(250), fn {id, track}, queue ->
+          PartQueue.add_track(queue, id, track)
+        end)
+      end
+
+    {sample_queue, part_queue}
   end
 
   defp get_referenced_renditions(variant, renditions) do
