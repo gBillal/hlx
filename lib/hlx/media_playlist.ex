@@ -12,6 +12,7 @@ defmodule HLX.MediaPlaylist do
           sequence_number: non_neg_integer(),
           discontinuity_number: non_neg_integer(),
           pending_segment: Segment.t() | nil,
+          target_duration: pos_integer(),
           part_target_duration: number() | nil
         }
 
@@ -23,6 +24,7 @@ defmodule HLX.MediaPlaylist do
     :sequence_number,
     :discontinuity_number,
     :pending_segment,
+    :target_duration,
     :part_target_duration
   ]
 
@@ -33,7 +35,8 @@ defmodule HLX.MediaPlaylist do
       max_segments: Keyword.get(opts, :max_segments, 0),
       segment_count: 0,
       discontinuity_number: 0,
-      sequence_number: 0
+      sequence_number: 0,
+      target_duration: 0
     }
   end
 
@@ -82,11 +85,7 @@ defmodule HLX.MediaPlaylist do
 
   @spec to_m3u8(t(), keyword()) :: ExM3U8.MediaPlaylist.t()
   def to_m3u8(%__MODULE__{segments: segments} = state, opts \\ []) do
-    {timeline, target_duration} =
-      Enum.reduce(segments, {[], 0}, fn segment, {acc, target_duraiton} ->
-        acc = [Segment.hls_tag(segment) | acc]
-        {acc, max(target_duraiton, round(segment.duration))}
-      end)
+    timeline = Enum.reduce(segments, [], &[Segment.hls_tag(&1) | &2])
 
     timeline =
       if state.pending_segment,
@@ -99,21 +98,26 @@ defmodule HLX.MediaPlaylist do
         _ -> timeline
       end
 
+    server_control =
+      if state.part_target_duration do
+        %ExM3U8.MediaPlaylist.ServerControl{
+          can_block_reload?: Keyword.get(opts, :can_block_reload?, false),
+          hold_back: state.target_duration * 3,
+          part_hold_back: state.part_target_duration * 3
+        }
+      end
+
     %ExM3U8.MediaPlaylist{
-      timeline: Enum.reverse(timeline) |> List.flatten(),
+      timeline: timeline |> Enum.reverse() |> List.flatten(),
       info: %ExM3U8.MediaPlaylist.Info{
         version: Keyword.get(opts, :version, 7),
         playlist_type: Keyword.get(opts, :playlist_type),
         independent_segments: true,
         media_sequence: state.sequence_number,
         discontinuity_sequence: state.discontinuity_number,
-        target_duration: target_duration,
+        target_duration: state.target_duration,
         part_inf: state.part_target_duration,
-        server_control: %ExM3U8.MediaPlaylist.ServerControl{
-          can_block_reload?: false,
-          hold_back: target_duration * 3,
-          part_hold_back: state.part_target_duration && state.part_target_duration * 3
-        }
+        server_control: server_control
       }
     }
   end
@@ -142,7 +146,12 @@ defmodule HLX.MediaPlaylist do
         {segment, state}
       end
 
-    %{state | segments: Qex.push(segments, segment), segment_count: state.segment_count + 1}
+    %{
+      state
+      | segments: Qex.push(segments, segment),
+        segment_count: state.segment_count + 1,
+        target_duration: max(state.target_duration, ceil(segment.duration))
+    }
   end
 
   defp delete_old_segment(%{max_segments: 0} = state), do: {state, nil}

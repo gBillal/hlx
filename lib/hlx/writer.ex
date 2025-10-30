@@ -6,6 +6,9 @@ defmodule HLX.Writer do
   alias HLX.{PartQueue, SampleQueue}
   alias HLX.Writer.{TracksMuxer, Variant}
 
+  @default_target_duration 2000
+  @default_part_duration 300
+
   @type mode :: :live | :vod
   @type segment_type :: :mpeg_ts | :fmp4 | :low_latency
   @type tracks :: [HLX.Track.t()]
@@ -144,7 +147,7 @@ defmodule HLX.Writer do
     muxer_options = [segment_type: writer.segment_type]
 
     rendition_options = [
-      target_duration: 2000,
+      target_duration: @default_target_duration,
       segment_type: writer.segment_type,
       max_segments: writer.max_segments,
       audio: options[:audio],
@@ -406,7 +409,7 @@ defmodule HLX.Writer do
     sample_queue =
       Enum.reduce(
         tracks,
-        SampleQueue.new(variant.id, 2000),
+        SampleQueue.new(variant.id, @default_target_duration),
         &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
       )
 
