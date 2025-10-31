@@ -429,7 +429,7 @@ defmodule HLX.Writer do
         |> Enum.flat_map(
           &Enum.map(TracksMuxer.tracks(&1.tracks_muxer), fn track -> {&1.id, track} end)
         )
-        |> Enum.reduce(PartQueue.new(250), fn {id, track}, queue ->
+        |> Enum.reduce(PartQueue.new(@default_part_duration), fn {id, track}, queue ->
           PartQueue.add_track(queue, id, track)
         end)
       end
