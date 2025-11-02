@@ -13,7 +13,8 @@ defmodule HLX.MediaPlaylist do
           discontinuity_number: non_neg_integer(),
           pending_segment: Segment.t() | nil,
           target_duration: pos_integer(),
-          part_target_duration: number() | nil
+          part_target_duration: number() | nil,
+          part_index: non_neg_integer()
         }
 
   defstruct [
@@ -25,7 +26,8 @@ defmodule HLX.MediaPlaylist do
     :discontinuity_number,
     :pending_segment,
     :target_duration,
-    :part_target_duration
+    :part_target_duration,
+    :part_index
   ]
 
   @spec new(Keyword.t()) :: t()
@@ -36,18 +38,19 @@ defmodule HLX.MediaPlaylist do
       segment_count: 0,
       discontinuity_number: 0,
       sequence_number: 0,
-      target_duration: 0
+      target_duration: 0,
+      part_index: 0
     }
   end
 
   @spec add_init_header(t(), String.t()) :: t()
   def add_init_header(state, uri), do: %{state | temp_init: uri}
 
-  @spec add_segment(t(), Segment.t()) :: {t(), Segment.t() | nil}
+  @spec add_segment(t(), Segment.t()) :: {t(), Segment.t() | nil, [Part.t()]}
   def add_segment(%__MODULE__{pending_segment: nil} = state, segment) do
-    state
-    |> do_add_segment(segment)
-    |> delete_old_segment()
+    {state, parts} = delete_old_parts(state)
+    {state, segment} = state |> do_add_segment(segment) |> delete_old_segment()
+    {state, segment, parts}
   end
 
   def add_segment(%__MODULE__{pending_segment: pending_segment} = state, segment) do
@@ -62,14 +65,18 @@ defmodule HLX.MediaPlaylist do
   end
 
   @spec add_part(t(), String.t(), number()) :: t()
-  def add_part(playlist, part_uri, part_duration) do
-    segment = if playlist.pending_segment, do: playlist.pending_segment, else: %Segment{}
-    part = %Part{uri: part_uri, duration: part_duration, independent?: length(segment.parts) == 0}
+  def add_part(%{pending_segment: nil} = playlist, part_uri, part_duration) do
+    add_part(%{playlist | pending_segment: %Segment{}, part_index: 0}, part_uri, part_duration)
+  end
+
+  def add_part(%{pending_segment: segment} = playlist, part_uri, part_duration) do
+    part = %Part{uri: part_uri, duration: part_duration, independent?: playlist.part_index == 0}
 
     %{
       playlist
       | pending_segment: %{segment | parts: [part | segment.parts]},
-        part_target_duration: max(playlist.part_target_duration || 0, part_duration)
+        part_target_duration: max(playlist.part_target_duration || 0, part_duration),
+        part_index: playlist.part_index + 1
     }
   end
 
@@ -137,6 +144,25 @@ defmodule HLX.MediaPlaylist do
 
   @spec segment_count(t()) :: non_neg_integer()
   def segment_count(state), do: state.segment_count + state.sequence_number
+
+  defp delete_old_parts(state) do
+    if not is_nil(state.part_target_duration) and state.segment_count > 2 do
+      {seg_1, segments} = Qex.pop_back!(state.segments)
+      {seg_2, segments} = Qex.pop_back!(segments)
+      {seg_3, segments} = Qex.pop_back!(segments)
+
+      state =
+        segments
+        |> Qex.push(%{seg_3 | parts: []})
+        |> Qex.push(seg_2)
+        |> Qex.push(seg_1)
+        |> then(&%{state | segments: &1})
+
+      {state, seg_3.parts}
+    else
+      {state, []}
+    end
+  end
 
   defp do_add_segment(%{segments: segments} = state, segment) do
     {segment, state} =

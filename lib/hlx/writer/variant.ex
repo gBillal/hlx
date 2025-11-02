@@ -83,11 +83,13 @@ defmodule HLX.Writer.Variant do
 
     {playlist, storage} =
       case MediaPlaylist.add_segment(variant.playlist, segment) do
-        {playlist, nil} ->
-          {playlist, storage}
+        {playlist, nil, parts} ->
+          {playlist, HLX.Storage.delete_parts(variant.id, parts, storage)}
 
-        {playlist, discarded} ->
-          {playlist, HLX.Storage.delete_segment(variant.id, discarded, storage)}
+        {playlist, discarded, parts} ->
+          storage = HLX.Storage.delete_segment(variant.id, discarded, storage)
+          storage = HLX.Storage.delete_parts(variant.id, parts, storage)
+          {playlist, storage}
       end
 
     {%{variant | tracks_muxer: tracks_muxer, playlist: playlist}, storage}
