@@ -32,7 +32,7 @@ defmodule HLX.MixProject do
   defp deps do
     [
       {:media_codecs, "~> 0.8.0"},
-      {:ex_mp4, "~> 0.12.0"},
+      {:ex_mp4, "~> 0.13.0"},
       {:ex_m3u8, "~> 0.15.0"},
       {:mpeg_ts, "~> 2.2.0"},
       {:qex, "~> 0.5.1"},

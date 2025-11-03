@@ -14,10 +14,11 @@ defmodule HLX.Muxer.CMAF do
           tracks: %{non_neg_integer() => ExMP4.Track.t()},
           header: ExMP4.Box.t(),
           segments: map(),
-          fragments: map()
+          fragments: map(),
+          part_duration: map()
         }
 
-  defstruct [:tracks, :header, :segments, :fragments]
+  defstruct [:tracks, :header, :segments, :fragments, :part_duration]
 
   @impl true
   def init(tracks) do
@@ -27,7 +28,8 @@ defmodule HLX.Muxer.CMAF do
       tracks: tracks,
       header: build_header(Map.values(tracks)),
       segments: new_segments(tracks),
-      fragments: new_fragments(tracks)
+      fragments: new_fragments(tracks),
+      part_duration: Map.new(tracks, fn {id, _track} -> {id, 0} end)
     }
   end
 
@@ -44,6 +46,54 @@ defmodule HLX.Muxer.CMAF do
       end)
 
     %{state | fragments: fragments}
+  end
+
+  @impl true
+  def push_parts(parts, state) do
+    moof = %Box.Moof{mfhd: %Box.Mfhd{sequence_number: 0}}
+    mdat = %Box.Mdat{content: []}
+
+    trafs =
+      Map.new(state.part_duration, fn {id, duration} ->
+        traf = %Box.Traf{
+          tfhd: %Box.Tfhd{track_id: id},
+          tfdt: %Box.Tfdt{base_media_decode_time: duration},
+          trun: [%Box.Trun{}]
+        }
+
+        {id, traf}
+      end)
+
+    {moof, mdat, parts_duration, part_duration_s} =
+      Enum.reduce(parts, {moof, mdat, state.part_duration, 0}, fn {track_id, samples},
+                                                                  {moof, mdat, parts_duration,
+                                                                   part_duration} ->
+        traf =
+          samples
+          |> Enum.reduce(trafs[track_id], &Box.Traf.store_sample(&2, &1))
+          |> Box.Traf.finalize(true)
+
+        traf_dur = Box.Traf.duration(traf)
+        part_duration_s = traf_dur / state.tracks[track_id].timescale
+        parts_duration = Map.update!(parts_duration, track_id, &(&1 + traf_dur))
+
+        moof = %Box.Moof{moof | traf: [traf | moof.traf]}
+        mdat = %Box.Mdat{mdat | content: [Enum.map(samples, & &1.payload) | mdat.content]}
+        {moof, mdat, parts_duration, max(part_duration, part_duration_s)}
+      end)
+
+    moof = %Box.Moof{moof | traf: Enum.reverse(moof.traf)}
+    mdat = %Box.Mdat{mdat | content: Enum.reverse(mdat.content)}
+
+    moof = Box.Moof.update_base_offsets(moof, Box.size(moof) + @mdat_header_size, true)
+
+    # push samples to main segments
+    state =
+      Enum.reduce(parts, state, fn {_track_id, samples}, state ->
+        Enum.reduce(samples, state, &push/2)
+      end)
+
+    {Box.serialize([moof, mdat]), part_duration_s, %{state | part_duration: parts_duration}}
   end
 
   @impl true

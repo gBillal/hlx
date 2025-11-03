@@ -14,20 +14,18 @@ defmodule HLX.SampleQueue do
         }
 
   @type t() :: %__MODULE__{
+          id: String.t(),
           target_duration: non_neg_integer(),
           lead_track: track_id() | nil,
           tracks: %{track_id() => track()},
           last_sample_timestamp: non_neg_integer()
         }
 
-  defstruct lead_track: nil,
-            tracks: %{},
-            target_duration: 0,
-            last_sample_timestamp: 0
+  defstruct id: nil, lead_track: nil, tracks: %{}, target_duration: 0, last_sample_timestamp: 0
 
-  @spec new(non_neg_integer()) :: t()
-  def new(target_duration) do
-    %__MODULE__{target_duration: target_duration}
+  @spec new(String.t(), non_neg_integer()) :: t()
+  def new(id, target_duration) do
+    %__MODULE__{id: id, target_duration: target_duration}
   end
 
   @spec track_ids(t()) :: [track_id()]
@@ -141,7 +139,7 @@ defmodule HLX.SampleQueue do
 
   defp flush?(sample_queue) do
     Enum.all?(sample_queue.tracks, fn {id, track} ->
-      id == sample_queue.lead_track or track.queue_size > 0
+      track.queue_size > 0 or id == sample_queue.lead_track
     end)
   end
 

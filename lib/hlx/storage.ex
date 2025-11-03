@@ -34,9 +34,24 @@ defmodule HLX.Storage do
               {uri(), state()}
 
   @doc """
+  Callback invoked to store a part of a segment.
+  """
+  @callback store_part(playlist_name(), resource_name(), payload(), state()) :: {uri(), state()}
+
+  @doc """
   Callback invoked to delete a segment.
   """
   @callback delete_segment(playlist_name(), HLX.Segment.t(), state()) :: state()
+
+  @doc """
+  Callback invoked to delete parts of a segment.
+  """
+  @callback delete_parts(playlist_name(), [ExM3U8.Tags.Part.t()], state()) :: state()
+
+  @doc """
+  Callback invoked to generate the path for a resource.
+  """
+  @callback path(playlist_name(), resource_name(), state()) :: String.t()
 
   @optional_callbacks store_init_header: 4
 
@@ -80,9 +95,29 @@ defmodule HLX.Storage do
   end
 
   @doc false
+  @spec store_part(playlist_name(), resource_name(), payload(), t()) :: {uri(), t()}
+  def store_part(playlist_name, resource_name, payload, storage) do
+    {uri, state} = storage.mod.store_part(playlist_name, resource_name, payload, storage.state)
+    {uri, %{storage | state: state}}
+  end
+
+  @doc false
   @spec delete_segment(playlist_name(), HLX.Segment.t(), t()) :: t()
   def delete_segment(playlist_name, segment, storage) do
     new_state = storage.mod.delete_segment(playlist_name, segment, storage.state)
     %{storage | state: new_state}
+  end
+
+  @doc false
+  @spec delete_parts(playlist_name(), [ExM3U8.Tags.Part], t()) :: t()
+  def delete_parts(playlist_name, parts, storage) do
+    new_state = storage.mod.delete_parts(playlist_name, parts, storage.state)
+    %{storage | state: new_state}
+  end
+
+  @doc false
+  @spec path(playlist_name(), resource_name(), t()) :: String.t()
+  def path(playlist_name, resource_name, storage) do
+    storage.mod.path(playlist_name, resource_name, storage.state)
   end
 end

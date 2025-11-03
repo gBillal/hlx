@@ -13,5 +13,7 @@ defmodule HLX.Muxer do
 
   @callback flush_segment(state()) :: {iodata(), state()}
 
-  @optional_callbacks get_init_header: 1
+  @callback push_parts(samples :: [HLX.Sample.t()], state()) :: state()
+
+  @optional_callbacks get_init_header: 1, push_parts: 2
 end

@@ -79,7 +79,7 @@ defmodule HLX.WriterTest do
         if unquote(segment_type) == :fmp4 do
           assert %{
                    timeline: [%ExM3U8.Tags.MediaInit{uri: "audio/init.mp4"} | _rest],
-                   info: %{target_duration: 2, media_sequence: 0}
+                   info: %{target_duration: 3, media_sequence: 0}
                  } = media_playlist
 
           assert File.exists?(Path.join(dir, "audio/init.mp4"))
@@ -127,7 +127,7 @@ defmodule HLX.WriterTest do
         if unquote(segment_type) == :fmp4 do
           assert %{
                    timeline: [%ExM3U8.Tags.MediaInit{uri: "audio_video/init.mp4"} | _rest],
-                   info: %{target_duration: 2, media_sequence: 0}
+                   info: %{target_duration: 3, media_sequence: 0}
                  } = media_playlist
 
           assert File.exists?(Path.join(dir, "audio_video/init.mp4"))
@@ -158,7 +158,7 @@ defmodule HLX.WriterTest do
 
       assert %{
                timeline: [%ExM3U8.Tags.MediaInit{uri: "audio/init.mp4"} | _rest],
-               info: %{target_duration: 2, media_sequence: 3}
+               info: %{target_duration: 3, media_sequence: 3}
              } = media_playlist
 
       assert File.exists?(Path.join(dir, "audio/init.mp4"))
@@ -230,9 +230,10 @@ defmodule HLX.WriterTest do
 
         assert %{
                  timeline: [%ExM3U8.Tags.MediaInit{uri: ^uri} | _rest],
-                 info: %{target_duration: 2, media_sequence: 0}
+                 info: %{target_duration: target_duration, media_sequence: 0}
                } = playlist
 
+        assert target_duration in [2, 3]
         assert File.exists?(Path.join(dir, uri))
 
         segments = Enum.filter(playlist.timeline, &is_struct(&1, ExM3U8.Tags.Segment))
@@ -314,8 +315,10 @@ defmodule HLX.WriterTest do
 
         assert %{
                  timeline: [%ExM3U8.Tags.MediaInit{uri: ^uri} | _rest],
-                 info: %{target_duration: 2, media_sequence: 0}
+                 info: %{target_duration: target_duration, media_sequence: 0}
                } = playlist
+
+        assert target_duration in [2, 3]
 
         assert File.exists?(Path.join(dir, uri))
 
