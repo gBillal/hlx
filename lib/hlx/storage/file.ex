@@ -50,6 +50,15 @@ defmodule HLX.Storage.File do
   end
 
   @impl true
+  def delete_parts(_playlist_name, parts, state) do
+    Enum.each(parts, fn part ->
+      File.rm!(path(state, part.uri))
+    end)
+
+    state
+  end
+
+  @impl true
   def path(playlist_name, resource_name, _state), do: Path.join([playlist_name, resource_name])
 
   defp store_data(path, data) do
