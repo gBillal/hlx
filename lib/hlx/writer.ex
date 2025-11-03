@@ -61,7 +61,7 @@ defmodule HLX.Writer do
   The following options can be provided:
     * `type` - The type of the playlist, either `:master` or `:media`. Defaults to `:media`.
     * `mode` - The mode of the playlist, either `:live` or `:vod`. Defaults to `:live`.
-    * `segment_type` - The type of segments to write, either `:mpeg_ts` or `:fmp4`. Defaults to `:fmp4`.
+    * `segment_type` - The type of segments to write, either `:mpeg_ts`, `:fmp4` or `:low_latency`. Defaults to `:fmp4`.
     * `max_segments` - The maximum number of segments to keep in the playlist, ignore on `vod` mode. Defaults to 0 (no limit).
     * `storage` - Storage configuration, a struct implementing `HLX.Storage`
   """
@@ -453,7 +453,12 @@ defmodule HLX.Writer do
           do: Keyword.replace!(validated_options, :max_segments, 0),
           else: validated_options
 
-      version = if validated_options[:segment_type] == :mpeg_ts, do: 6, else: 7
+      version =
+        case validated_options[:segment_type] do
+          :mpeg_ts -> 6
+          :fmp4 -> 7
+          :low_latency -> 10
+        end
 
       {:ok, Keyword.put(validated_options, :version, version)}
     end
