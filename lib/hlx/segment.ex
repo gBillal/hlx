@@ -31,26 +31,31 @@ defmodule HLX.Segment do
   @spec bitrate(t()) :: non_neg_integer()
   def bitrate(%{size: size, duration: duration}), do: trunc(size * 8 / duration)
 
-  @spec hls_tag(t()) :: [struct()]
-  def hls_tag(segment) do
-    [
-      [media_init_tag(segment.media_init), program_date_time_tag(segment.timestamp)],
-      Enum.reverse(segment.parts),
-      [segment_tag(segment.uri, segment.duration), discontinuity_tag(segment.discontinuity?)]
-    ]
-    |> Enum.concat()
-    |> Enum.reject(&is_nil/1)
+  defimpl ExM3U8.Serializer do
+    alias ExM3U8.{Serializer, Tags}
+
+    def serialize(segment) do
+      [
+        serialize_init_tag(segment.media_init),
+        serialize_program_date_time(segment.timestamp),
+        Enum.reverse(segment.parts),
+        serialize_segment(segment.uri, segment.duration),
+        serialize_discontinuity(segment.discontinuity?)
+      ]
+      |> List.flatten()
+      |> Enum.map_intersperse("\n", &Serializer.serialize/1)
+    end
+
+    defp serialize_init_tag(nil), do: []
+    defp serialize_init_tag(uri), do: %Tags.MediaInit{uri: uri}
+
+    defp serialize_program_date_time(nil), do: []
+    defp serialize_program_date_time(date), do: %Tags.ProgramDateTime{date: date}
+
+    defp serialize_segment(nil, _duration), do: []
+    defp serialize_segment(uri, duration), do: %Tags.Segment{uri: uri, duration: duration}
+
+    defp serialize_discontinuity(false), do: []
+    defp serialize_discontinuity(true), do: %Tags.Discontinuity{}
   end
-
-  defp media_init_tag(nil), do: nil
-  defp media_init_tag(uri), do: %Tags.MediaInit{uri: uri}
-
-  defp program_date_time_tag(nil), do: nil
-  defp program_date_time_tag(date), do: %Tags.ProgramDateTime{date: date}
-
-  defp segment_tag(nil, _duration), do: nil
-  defp segment_tag(uri, duration), do: %Tags.Segment{uri: uri, duration: duration}
-
-  defp discontinuity_tag(false), do: nil
-  defp discontinuity_tag(true), do: %Tags.Discontinuity{}
 end

@@ -66,7 +66,11 @@ defmodule HLX.MediaPlaylist do
 
   @spec add_part(t(), String.t(), number()) :: t()
   def add_part(%{pending_segment: nil} = playlist, part_uri, part_duration) do
-    add_part(%{playlist | pending_segment: %Segment{}, part_index: 0}, part_uri, part_duration)
+    add_part(
+      %{playlist | pending_segment: %Segment{media_init: playlist.temp_init}, part_index: 0},
+      part_uri,
+      part_duration
+    )
   end
 
   def add_part(%{pending_segment: segment} = playlist, part_uri, part_duration) do
@@ -92,17 +96,15 @@ defmodule HLX.MediaPlaylist do
 
   @spec to_m3u8(t(), keyword()) :: ExM3U8.MediaPlaylist.t()
   def to_m3u8(%__MODULE__{segments: segments} = state, opts \\ []) do
-    timeline = Enum.reduce(segments, [], &[Segment.hls_tag(&1) | &2])
-
-    timeline =
+    segments =
       if state.pending_segment,
-        do: [Segment.hls_tag(state.pending_segment) | timeline],
-        else: timeline
+        do: Qex.push(segments, state.pending_segment),
+        else: segments
 
-    timeline =
+    segments =
       case opts[:preload_hint] do
-        {type, uri} -> [%ExM3U8.Tags.PreloadHint{type: type, uri: uri} | timeline]
-        _ -> timeline
+        {type, uri} -> Qex.push(segments, %ExM3U8.Tags.PreloadHint{type: type, uri: uri})
+        _ -> segments
       end
 
     server_control =
@@ -115,7 +117,7 @@ defmodule HLX.MediaPlaylist do
       end
 
     %ExM3U8.MediaPlaylist{
-      timeline: timeline |> Enum.reverse() |> List.flatten(),
+      timeline: Enum.to_list(segments),
       info: %ExM3U8.MediaPlaylist.Info{
         version: Keyword.get(opts, :version, 7),
         playlist_type: Keyword.get(opts, :playlist_type),
