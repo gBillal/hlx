@@ -1,8 +1,7 @@
 defmodule HLX.MediaPlaylist do
   @moduledoc false
 
-  alias ExM3U8.Tags.Part
-  alias HLX.Segment
+  alias HLX.{Part, Segment}
 
   @type t :: %__MODULE__{
           segments: Qex.t(Segment.t()),
@@ -12,7 +11,7 @@ defmodule HLX.MediaPlaylist do
           sequence_number: non_neg_integer(),
           discontinuity_number: non_neg_integer(),
           pending_segment: Segment.t() | nil,
-          target_duration: pos_integer(),
+          target_duration: non_neg_integer(),
           part_target_duration: number() | nil,
           part_index: non_neg_integer()
         }
@@ -64,20 +63,26 @@ defmodule HLX.MediaPlaylist do
     add_segment(%{state | pending_segment: nil}, pending_segment)
   end
 
-  @spec add_part(t(), String.t(), number()) :: t()
+  @spec add_part(t(), String.t(), number()) :: {Part.t(), t()}
   def add_part(%{pending_segment: nil} = playlist, part_uri, part_duration) do
     add_part(%{playlist | pending_segment: %Segment{}, part_index: 0}, part_uri, part_duration)
   end
 
   def add_part(%{pending_segment: segment} = playlist, part_uri, part_duration) do
-    part = %Part{uri: part_uri, duration: part_duration, independent?: playlist.part_index == 0}
-
-    %{
-      playlist
-      | pending_segment: %{segment | parts: [part | segment.parts]},
-        part_target_duration: max(playlist.part_target_duration || 0, part_duration),
-        part_index: playlist.part_index + 1
+    part = %Part{
+      uri: part_uri,
+      duration: part_duration,
+      index: playlist.part_index,
+      segment_index: segment_count(playlist)
     }
+
+    {part,
+     %{
+       playlist
+       | pending_segment: %{segment | parts: [part | segment.parts]},
+         part_target_duration: max(playlist.part_target_duration || 0, part_duration),
+         part_index: playlist.part_index + 1
+     }}
   end
 
   @spec add_discontinuity(t()) :: t()
@@ -108,7 +113,7 @@ defmodule HLX.MediaPlaylist do
     server_control =
       if state.part_target_duration do
         %ExM3U8.MediaPlaylist.ServerControl{
-          can_block_reload?: Keyword.get(opts, :can_block_reload?, false),
+          can_block_reload?: Keyword.get(opts, :can_block_reload?, true),
           hold_back: state.target_duration * 3,
           part_hold_back: state.part_target_duration * 3
         }

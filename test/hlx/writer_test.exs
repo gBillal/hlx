@@ -1,7 +1,7 @@
 defmodule HLX.WriterTest do
   use ExUnit.Case, async: true
 
-  alias HLX.{Storage, Writer}
+  alias HLX.Writer
   alias MediaCodecs.{H264, H265, MPEG4}
 
   @moduletag :tmp_dir
@@ -27,16 +27,16 @@ defmodule HLX.WriterTest do
 
   describe "new writer" do
     test "create a new writer", %{tmp_dir: dir} do
-      assert {:ok, _writer} = Writer.new(storage: %Storage.File{dir: dir})
+      assert {:ok, _writer} = Writer.new(storage_dir: dir)
     end
 
     test "new writer with invalid params", %{tmp_dir: dir} do
-      assert {:error, _} = Writer.new(type: :master_playlist, storage: %Storage.File{dir: dir})
-      assert {:error, _} = Writer.new(max_segments: -1, storage: %Storage.File{dir: dir})
+      assert {:error, _} = Writer.new(type: :master_playlist, storage_dir: dir)
+      assert {:error, _} = Writer.new(max_segments: -1, storage_dir: dir)
     end
 
     test "create more than one variant for media playlist should fail", %{tmp_dir: dir} do
-      assert {:ok, writer} = Writer.new(type: :media, storage: %Storage.File{dir: dir})
+      assert {:ok, writer} = Writer.new(type: :media, storage_dir: dir)
       assert {:ok, writer} = Writer.add_variant(writer, "variant1", tracks: [@default_track])
 
       assert {:error, "Media playlist support only one variant"} =
@@ -44,12 +44,12 @@ defmodule HLX.WriterTest do
     end
 
     test "create a rendition for media playlist should fail", %{tmp_dir: dir} do
-      assert {:ok, writer} = Writer.new(type: :media, storage: %Storage.File{dir: dir})
+      assert {:ok, writer} = Writer.new(type: :media, storage_dir: dir)
 
       assert {:error, :not_master_playlist} =
                Writer.add_rendition(writer, "video", type: :audio, track: @audio_track)
 
-      assert writer = Writer.new!(type: :media, storage: %Storage.File{dir: dir})
+      assert writer = Writer.new!(type: :media, storage_dir: dir)
 
       assert_raise RuntimeError, fn ->
         Writer.add_rendition!(writer, "video", type: :audio, track: @audio_track)
@@ -62,7 +62,7 @@ defmodule HLX.WriterTest do
       test "#{segment_type}: audio only", %{audio_track: track, tmp_dir: dir} do
         assert {:ok, writer} =
                  Writer.new(
-                   storage: %Storage.File{dir: dir},
+                   storage_dir: dir,
                    mode: :vod,
                    segment_type: unquote(segment_type)
                  )
@@ -78,11 +78,11 @@ defmodule HLX.WriterTest do
 
         if unquote(segment_type) == :fmp4 do
           assert %{
-                   timeline: [%ExM3U8.Tags.MediaInit{uri: "audio/init.mp4"} | _rest],
+                   timeline: [%ExM3U8.Tags.MediaInit{uri: "audio/init_0.mp4"} | _rest],
                    info: %{target_duration: 3, media_sequence: 0}
                  } = media_playlist
 
-          assert File.exists?(Path.join(dir, "audio/init.mp4"))
+          assert File.exists?(Path.join(dir, "audio/init_0.mp4"))
         end
 
         segments = Enum.filter(media_playlist.timeline, &is_struct(&1, ExM3U8.Tags.Segment))
@@ -105,7 +105,7 @@ defmodule HLX.WriterTest do
       } do
         assert {:ok, writer} =
                  Writer.new(
-                   storage: %Storage.File{dir: dir},
+                   storage_dir: dir,
                    mode: :vod,
                    segment_type: unquote(segment_type)
                  )
@@ -126,11 +126,11 @@ defmodule HLX.WriterTest do
 
         if unquote(segment_type) == :fmp4 do
           assert %{
-                   timeline: [%ExM3U8.Tags.MediaInit{uri: "audio_video/init.mp4"} | _rest],
+                   timeline: [%ExM3U8.Tags.MediaInit{uri: "audio_video/init_0.mp4"} | _rest],
                    info: %{target_duration: 3, media_sequence: 0}
                  } = media_playlist
 
-          assert File.exists?(Path.join(dir, "audio_video/init.mp4"))
+          assert File.exists?(Path.join(dir, "audio_video/init_0.mp4"))
         end
 
         segments = Enum.filter(media_playlist.timeline, &is_struct(&1, ExM3U8.Tags.Segment))
@@ -146,7 +146,7 @@ defmodule HLX.WriterTest do
     end
 
     test "live media playlist", %{audio_track: track, tmp_dir: dir} do
-      assert {:ok, writer} = Writer.new(storage: %Storage.File{dir: dir}, max_segments: 3)
+      assert {:ok, writer} = Writer.new(storage_dir: dir, max_segments: 3)
       assert {:ok, writer} = Writer.add_variant(writer, "audio", tracks: [track])
 
       assert :ok = writer |> write_audio_samples("audio") |> Writer.close()
@@ -157,11 +157,11 @@ defmodule HLX.WriterTest do
       assert {:ok, media_playlist} = ExM3U8.deserialize_media_playlist(File.read!(playlist))
 
       assert %{
-               timeline: [%ExM3U8.Tags.MediaInit{uri: "audio/init.mp4"} | _rest],
+               timeline: [%ExM3U8.Tags.MediaInit{uri: "audio/init_0.mp4"} | _rest],
                info: %{target_duration: 3, media_sequence: 3}
              } = media_playlist
 
-      assert File.exists?(Path.join(dir, "audio/init.mp4"))
+      assert File.exists?(Path.join(dir, "audio/init_0.mp4"))
 
       segments = Enum.filter(media_playlist.timeline, &is_struct(&1, ExM3U8.Tags.Segment))
       assert length(segments) == 3
@@ -178,7 +178,7 @@ defmodule HLX.WriterTest do
       assert {:ok, writer} =
                Writer.new(
                  type: :master,
-                 storage: %Storage.File{dir: dir},
+                 storage_dir: dir,
                  mode: :vod,
                  segment_type: :fmp4
                )
@@ -224,7 +224,7 @@ defmodule HLX.WriterTest do
              } = media_playlist
 
       for {name, playlist} <- [{"video", video_playlist}, {"audio", audio_playlist}] do
-        uri = "#{name}/init.mp4"
+        uri = "#{name}/init_0.mp4"
 
         assert {:ok, playlist} = ExM3U8.deserialize_media_playlist(File.read!(playlist))
 
@@ -250,7 +250,7 @@ defmodule HLX.WriterTest do
       assert writer =
                Writer.new!(
                  type: :master,
-                 storage: %Storage.File{dir: dir},
+                 storage_dir: dir,
                  mode: :vod,
                  segment_type: :fmp4
                )
@@ -309,7 +309,7 @@ defmodule HLX.WriterTest do
             {"audio", audio_playlist},
             {"video2", video2_playlist}
           ] do
-        uri = "#{name}/init.mp4"
+        uri = "#{name}/init_0.mp4"
 
         assert {:ok, playlist} = ExM3U8.deserialize_media_playlist(File.read!(playlist))
 

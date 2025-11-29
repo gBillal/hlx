@@ -2,23 +2,26 @@ defmodule HLX.Writer.Variant do
   @moduledoc false
 
   alias HLX.MediaPlaylist
+  alias HLX.Storage
   alias HLX.Writer.{StreamInfo, TracksMuxer}
 
   @type t :: %__MODULE__{
           id: String.t(),
           playlist: MediaPlaylist.t(),
           tracks_muxer: TracksMuxer.t(),
+          storage: Storage.Segment.t(),
           depends_on: String.t() | nil,
-          config: StreamInfo.t()
+          config: StreamInfo.t(),
+          ready?: boolean()
         }
 
-  defstruct [:id, :tracks_muxer, :playlist, :depends_on, :config]
+  defstruct [:id, :tracks_muxer, :playlist, :storage, :depends_on, :config, ready?: false]
 
   @spec new(String.t(), TracksMuxer.t(), keyword()) :: t()
   def new(id, tracks_muxer, config) do
     playlist = MediaPlaylist.new(config)
 
-    config = %StreamInfo{
+    stream_config = %StreamInfo{
       name: id,
       type: config[:type],
       audio: config[:audio],
@@ -29,53 +32,83 @@ defmodule HLX.Writer.Variant do
       subtitles: config[:subtitles]
     }
 
-    %__MODULE__{id: id, tracks_muxer: tracks_muxer, playlist: playlist, config: config}
-  end
+    extension =
+      case tracks_muxer.muxer_mod do
+        HLX.Muxer.TS -> ".ts"
+        HLX.Muxer.CMAF -> ".m4s"
+      end
 
-  @spec save_init_header(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
-  def save_init_header(variant, storage) do
-    data = TracksMuxer.save_init_header(variant.tracks_muxer)
-    {uri, storage} = HLX.Storage.store_init_header(variant.id, "init.mp4", data, storage)
-
-    variant = %{
-      variant
-      | playlist: MediaPlaylist.add_init_header(variant.playlist, uri)
+    variant = %__MODULE__{
+      id: id,
+      tracks_muxer: tracks_muxer,
+      playlist: playlist,
+      storage: Storage.Segment.new(config[:storage_dir], id, extension: extension),
+      config: stream_config,
+      ready?: TracksMuxer.ready?(tracks_muxer)
     }
 
-    {variant, storage}
+    save_init_header(variant)
+  end
+
+  @spec save_init_header(t()) :: t()
+  def save_init_header(%{tracks_muxer: muxer} = variant) when muxer.muxer_mod == HLX.Muxer.TS do
+    variant
+  end
+
+  def save_init_header(%{ready?: false} = variant), do: variant
+
+  def save_init_header(variant) do
+    data = TracksMuxer.save_init_header(variant.tracks_muxer)
+    {uri, storage} = Storage.Segment.store_init_header(data, variant.storage)
+
+    %{
+      variant
+      | playlist: MediaPlaylist.add_init_header(variant.playlist, uri),
+        storage: storage
+    }
   end
 
   @spec process_sample(t(), HLX.Sample.t()) :: {HLX.Sample.t(), t()}
   def process_sample(variant, sample) do
     {tracks_muxer, sample} = TracksMuxer.process_sample(variant.tracks_muxer, sample)
-    {sample, %{variant | tracks_muxer: tracks_muxer}}
+
+    if not variant.ready? and TracksMuxer.ready?(tracks_muxer) do
+      {sample, save_init_header(%{variant | ready?: true, tracks_muxer: tracks_muxer})}
+    else
+      {sample, %{variant | tracks_muxer: tracks_muxer}}
+    end
   end
 
   @spec push_sample(t(), HLX.Sample.t()) :: t()
-  def push_sample(variant, sample) do
-    tracks_muxer = TracksMuxer.push_sample(variant.tracks_muxer, sample)
-    %{variant | tracks_muxer: tracks_muxer}
+  def push_sample(%{ready?: true} = variant, sample) do
+    %{variant | tracks_muxer: TracksMuxer.push_sample(variant.tracks_muxer, sample)}
   end
 
-  @spec push_parts(t(), TracksMuxer.parts(), HLX.Storage.t()) :: t()
-  def push_parts(variant, parts, storage) do
-    part_name = generate_part_name(variant.playlist)
+  def push_sample(variant, _sample), do: variant
 
+  @spec push_parts(t(), TracksMuxer.parts()) :: t()
+  def push_parts(variant, parts) do
     {data, duration, tracks_muxer} = TracksMuxer.push_parts(variant.tracks_muxer, parts)
-    {uri, storage} = HLX.Storage.store_part(variant.id, part_name, data, storage)
-    playlist = MediaPlaylist.add_part(variant.playlist, uri, duration)
+    {uri, storage} = Storage.Segment.store_part(data, variant.storage)
+    {part, playlist} = MediaPlaylist.add_part(variant.playlist, uri, duration)
 
-    {%{variant | tracks_muxer: tracks_muxer, playlist: playlist}, storage}
+    {part,
+     %{
+       variant
+       | tracks_muxer: tracks_muxer,
+         playlist: playlist,
+         storage: storage
+     }}
   end
 
-  @spec flush(t(), HLX.Storage.t()) :: {t(), HLX.Storage.t()}
-  def flush(variant, storage) do
-    name = generate_segment_name(variant)
+  @spec flush(t()) :: {HLX.Segment.t(), t()}
+  def flush(variant) do
     {data, duration, tracks_muxer} = TracksMuxer.flush(variant.tracks_muxer)
-    {uri, storage} = HLX.Storage.store_segment(variant.id, name, data, storage)
+    {uri, storage} = Storage.Segment.store_segment(data, variant.storage)
 
     segment =
       %HLX.Segment{
+        index: MediaPlaylist.segment_count(variant.playlist),
         uri: uri,
         size: IO.iodata_length(data),
         duration: duration
@@ -84,15 +117,15 @@ defmodule HLX.Writer.Variant do
     {playlist, storage} =
       case MediaPlaylist.add_segment(variant.playlist, segment) do
         {playlist, nil, parts} ->
-          {playlist, HLX.Storage.delete_parts(variant.id, parts, storage)}
+          {playlist, Storage.Segment.delete_parts(parts, storage)}
 
         {playlist, discarded, parts} ->
-          storage = HLX.Storage.delete_segment(variant.id, discarded, storage)
-          storage = HLX.Storage.delete_parts(variant.id, parts, storage)
+          storage = Storage.Segment.delete_segment(discarded, storage)
+          storage = Storage.Segment.delete_parts(parts, storage)
           {playlist, storage}
       end
 
-    {%{variant | tracks_muxer: tracks_muxer, playlist: playlist}, storage}
+    {segment, %{variant | tracks_muxer: tracks_muxer, playlist: playlist, storage: storage}}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]
@@ -121,9 +154,9 @@ defmodule HLX.Writer.Variant do
 
         codecs =
           tracks
-          |> Enum.map(& &1.mime)
-          |> Enum.concat(referenced_codecs)
-          |> Enum.uniq()
+          |> Stream.map(& &1.mime)
+          |> Stream.concat(referenced_codecs)
+          |> Stream.uniq()
           |> Enum.join(",")
 
         resolution =
@@ -156,31 +189,7 @@ defmodule HLX.Writer.Variant do
   end
 
   @spec next_part_name(t()) :: String.t()
-  def next_part_name(%{playlist: playlist}) do
-    seg_count = MediaPlaylist.segment_count(playlist)
-
-    case playlist.pending_segment do
-      nil -> part_name(seg_count, 0)
-      _ -> part_name(seg_count, length(playlist.pending_segment.parts))
-    end
-  end
-
-  defp generate_segment_name(variant) do
-    extension =
-      case variant.tracks_muxer.muxer_mod do
-        HLX.Muxer.TS -> "ts"
-        HLX.Muxer.CMAF -> "m4s"
-      end
-
-    "segment_#{MediaPlaylist.segment_count(variant.playlist)}.#{extension}"
-  end
-
-  defp generate_part_name(playlist) do
-    part_index = if playlist.pending_segment, do: length(playlist.pending_segment.parts), else: 0
-    part_name(MediaPlaylist.segment_count(playlist), part_index)
-  end
-
-  defp part_name(segment, part), do: "segment_#{segment}_part_#{part}.m4s"
+  def next_part_name(%{storage: storage}), do: Storage.Segment.next_part_uri(storage)
 
   defp bandwidth(%{playlist: playlist}), do: MediaPlaylist.bandwidth(playlist)
 end

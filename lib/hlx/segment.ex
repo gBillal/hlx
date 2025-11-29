@@ -4,13 +4,14 @@ defmodule HLX.Segment do
   alias ExM3U8.Tags
 
   @type t :: %__MODULE__{
+          index: non_neg_integer(),
           uri: String.t(),
           size: non_neg_integer(),
           duration: number(),
           timestamp: DateTime.t() | nil,
           media_init: String.t() | nil,
           discontinuity?: boolean(),
-          parts: [ExM3U8.Tags.Part.t()]
+          parts: [HLX.Part.t()]
         }
 
   defstruct [
@@ -19,6 +20,7 @@ defmodule HLX.Segment do
     :duration,
     :timestamp,
     :media_init,
+    index: 0,
     discontinuity?: false,
     parts: []
   ]

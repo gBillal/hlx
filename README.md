@@ -11,7 +11,6 @@ Features:
     * Generate media playlist and/or multivariant playlists.
     * Generate playlists with one or multiple tracks/streams.
     * Support H.264, H.265 and AAC codecs.
-    * Save playlists/segments on disk or anywhere else by implementing `HLX.Storage` behaviour.
 
 ## Usage
 To create a simple media playlists with target duration of 2 seconds (default) and store the manifest and
