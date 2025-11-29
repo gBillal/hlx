@@ -7,11 +7,10 @@ defmodule HLX.PartQueue do
 
   @type part_ctx :: %{
           samples: [part_data()],
-          duration: non_neg_integer(),
           queue: Qex.t([part_data()]),
           queue_size: non_neg_integer(),
-          target_duration: non_neg_integer(),
-          timescale: non_neg_integer()
+          target_pts: non_neg_integer(),
+          target_duration: non_neg_integer()
         }
 
   @type t() :: %__MODULE__{
@@ -21,6 +20,8 @@ defmodule HLX.PartQueue do
 
   defstruct [:target_duration, parts: %{}]
 
+  @millisecond 1000
+
   @spec new(non_neg_integer()) :: t()
   def new(target_duration) do
     %__MODULE__{target_duration: target_duration}
@@ -28,15 +29,13 @@ defmodule HLX.PartQueue do
 
   @spec add_track(t(), String.t(), HLX.Track.t()) :: t()
   def add_track(part_queue, variant, track) do
-    target_duration = div(part_queue.target_duration * track.timescale, 1000)
+    target_duration = div(part_queue.target_duration * track.timescale, @millisecond)
 
     part_ctx = %{
       samples: [],
-      duration: 0,
       queue: Qex.new(),
       queue_size: 0,
-      target_duration: target_duration,
-      timescale: track.timescale
+      target_duration: target_duration
     }
 
     %{part_queue | parts: Map.put(part_queue.parts, {variant, track.id}, part_ctx)}
@@ -47,25 +46,25 @@ defmodule HLX.PartQueue do
   def push_sample(part_queue, track_id, sample) do
     part_ctx = Map.fetch!(part_queue.parts, track_id)
 
-    if part_ctx.duration + sample.duration > part_ctx.target_duration do
+    part_ctx =
+      if is_nil(part_ctx.target_pts),
+        do: %{part_ctx | target_pts: sample.dts + part_ctx.target_duration},
+        else: part_ctx
+
+    if sample.dts < part_ctx.target_pts do
+      part_ctx = %{part_ctx | samples: [sample | part_ctx.samples]}
+      {[], %{part_queue | parts: Map.put(part_queue.parts, track_id, part_ctx)}}
+    else
       part_ctx = %{
         part_ctx
         | samples: [sample],
-          duration: sample.duration,
+          target_pts: sample.dts + part_ctx.target_duration,
           queue: Qex.push(part_ctx.queue, Enum.reverse(part_ctx.samples)),
           queue_size: part_ctx.queue_size + 1
       }
 
       part_queue = %{part_queue | parts: Map.put(part_queue.parts, track_id, part_ctx)}
       maybe_flush_parts(part_queue)
-    else
-      part_ctx = %{
-        part_ctx
-        | samples: [sample | part_ctx.samples],
-          duration: part_ctx.duration + sample.duration
-      }
-
-      {[], %{part_queue | parts: Map.put(part_queue.parts, track_id, part_ctx)}}
     end
   end
 
@@ -79,7 +78,7 @@ defmodule HLX.PartQueue do
             _ -> Qex.pop!(part_ctx.queue)
           end
 
-        part_ctx = %{part_ctx | duration: 0, samples: [], queue: queue, queue_size: 0}
+        part_ctx = %{part_ctx | target_pts: nil, samples: [], queue: queue, queue_size: 0}
         {{track_id, part_data}, Map.put(acc, track_id, part_ctx)}
       end)
 
