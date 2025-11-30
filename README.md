@@ -17,7 +17,7 @@ To create a simple media playlists with target duration of 2 seconds (default) a
 segments on the current directory:
 
 ```elixir
-{:ok, writer} = HLX.Writer.new(storage: %HLX.Storage.File{dir: "."})
+{:ok, writer} = HLX.Writer.new(storage_dir: ".")
 track = HLX.Track.new(id: 1, type: :video, codec: :h264, timescale: 90_000)
 {:ok, writer} = HLX.Writer.add_variant(writer, "video", tracks: [track])
 

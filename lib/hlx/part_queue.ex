@@ -35,6 +35,7 @@ defmodule HLX.PartQueue do
       samples: [],
       queue: Qex.new(),
       queue_size: 0,
+      target_pts: nil,
       target_duration: target_duration
     }
 

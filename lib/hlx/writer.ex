@@ -302,7 +302,7 @@ defmodule HLX.Writer do
 
         {writer, part_queue}
       else
-        {writer, part_queue, {[], []}}
+        {writer, part_queue}
       end
 
     {parts, part_queue} =

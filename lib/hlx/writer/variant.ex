@@ -50,24 +50,6 @@ defmodule HLX.Writer.Variant do
     save_init_header(variant)
   end
 
-  @spec save_init_header(t()) :: t()
-  def save_init_header(%{tracks_muxer: muxer} = variant) when muxer.muxer_mod == HLX.Muxer.TS do
-    variant
-  end
-
-  def save_init_header(%{ready?: false} = variant), do: variant
-
-  def save_init_header(variant) do
-    data = TracksMuxer.save_init_header(variant.tracks_muxer)
-    {uri, storage} = Storage.Segment.store_init_header(data, variant.storage)
-
-    %{
-      variant
-      | playlist: MediaPlaylist.add_init_header(variant.playlist, uri),
-        storage: storage
-    }
-  end
-
   @spec process_sample(t(), HLX.Sample.t()) :: {HLX.Sample.t(), t()}
   def process_sample(variant, sample) do
     {tracks_muxer, sample} = TracksMuxer.process_sample(variant.tracks_muxer, sample)
@@ -190,6 +172,22 @@ defmodule HLX.Writer.Variant do
 
   @spec next_part_name(t()) :: String.t()
   def next_part_name(%{storage: storage}), do: Storage.Segment.next_part_uri(storage)
+
+  defp save_init_header(%{tracks_muxer: muxer} = variant) when muxer.muxer_mod == HLX.Muxer.TS,
+    do: variant
+
+  defp save_init_header(%{ready?: false} = variant), do: variant
+
+  defp save_init_header(variant) do
+    data = TracksMuxer.save_init_header(variant.tracks_muxer)
+    {uri, storage} = Storage.Segment.store_init_header(data, variant.storage)
+
+    %{
+      variant
+      | playlist: MediaPlaylist.add_init_header(variant.playlist, uri),
+        storage: storage
+    }
+  end
 
   defp bandwidth(%{playlist: playlist}), do: MediaPlaylist.bandwidth(playlist)
 end

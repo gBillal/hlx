@@ -6,9 +6,9 @@ defmodule HLX.Muxer.TS do
 
   import ExMP4.Helper, only: [timescalify: 3]
 
-  alias MPEG.TS.{Marshaler, Muxer, PMT}
+  alias MPEG.TS.{Marshaler, Muxer}
 
-  @ts_clock 90_000
+  @ts_clock 10 ** 9
 
   defstruct [:muxer, :tracks, :track_to_stream, :packets]
 
@@ -72,9 +72,9 @@ defmodule HLX.Muxer.TS do
     {data, %{state | packets: [pmt_packet, pat_packet], muxer: muxer}}
   end
 
-  defp stream_type_id(%{codec: :h264}), do: PMT.encode_stream_type(:H264)
-  defp stream_type_id(%{codec: :aac}), do: PMT.encode_stream_type(:AAC)
-  defp stream_type_id(%{codec: :h265}), do: PMT.encode_stream_type(:HEVC)
-  defp stream_type_id(%{codec: :hevc}), do: PMT.encode_stream_type(:HEVC)
+  defp stream_type_id(%{codec: :h264}), do: :H264_AVC
+  defp stream_type_id(%{codec: :aac}), do: :AAC_ADTS
+  defp stream_type_id(%{codec: :h265}), do: :HEVC
+  defp stream_type_id(%{codec: :hevc}), do: :HEVC
   defp stream_type_id(%{codec: media}), do: raise("Unsupported media: #{inspect(media)}")
 end

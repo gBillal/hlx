@@ -156,7 +156,7 @@ defmodule HLX.Track do
   end
 
   defp priv_data(:aac, esds) do
-    descriptor = MediaCodecs.MPEG4.ESDescriptor.parse(esds.es_descriptor)
+    [descriptor] = MediaCodecs.MPEG4.parse_descriptors(esds.es_descriptor)
     descriptor.dec_config_descr.decoder_specific_info
   end
 
