@@ -4,10 +4,7 @@ defmodule HLX.Writer do
   """
 
   alias HLX.{PartQueue, SampleQueue}
-  alias HLX.Writer.{TracksMuxer, Variant}
-
-  @default_target_duration 2000
-  @default_part_duration 300
+  alias HLX.Writer.{Config, TracksMuxer, Variant}
 
   @type mode :: :live | :vod
   @type segment_type :: :mpeg_ts | :fmp4 | :low_latency
@@ -34,8 +31,9 @@ defmodule HLX.Writer do
             mode: mode(),
             version: non_neg_integer(),
             segment_type: segment_type(),
-            storage: HLX.Storage.t(),
             max_segments: non_neg_integer(),
+            segment_duration: non_neg_integer(),
+            part_duration: non_neg_integer(),
             lead_variant: String.t() | nil,
             storage_dir: Path.t(),
             variants: %{String.t() => Variant.t()},
@@ -48,8 +46,9 @@ defmodule HLX.Writer do
     :mode,
     :segment_type,
     :version,
-    :storage,
     :max_segments,
+    :segment_duration,
+    :part_duration,
     :lead_variant,
     :storage_dir,
     variants: %{},
@@ -66,11 +65,13 @@ defmodule HLX.Writer do
     * `segment_type` - The type of segments to generate, either `:mpeg_ts`, `:fmp4` or `:low_latency`. Defaults to `:fmp4`.
     * `max_segments` - The maximum number of segments to keep in the playlist, ignored on `vod` mode. Defaults to 0 (no limit).
     * `storage_dir` - The directory where to store the playlists and segments. This is required.
+    * `segment_duration` - The target duration of each segment in milliseconds. Defaults to 2000.
+    * `part_duration` - The target duration of each part in milliseconds (only for low-latency segments). Defaults to 300.
   """
   @spec new(Keyword.t()) :: {:ok, t()}
   def new(options) do
-    with {:ok, options} <- validate_writer_opts(options) do
-      {:ok, struct(%__MODULE__{}, options)}
+    with {:ok, config} <- Config.new(options) do
+      {:ok, struct(%__MODULE__{}, config)}
     end
   end
 
@@ -151,7 +152,7 @@ defmodule HLX.Writer do
     muxer_options = [segment_type: writer.segment_type]
 
     rendition_options = [
-      target_duration: @default_target_duration,
+      target_duration: writer.segment_duration,
       segment_type: writer.segment_type,
       max_segments: writer.max_segments,
       audio: options[:audio],
@@ -231,7 +232,7 @@ defmodule HLX.Writer do
     if writer.mode == :live do
       base_timestamp = DateTime.to_unix(sample.timestamp || DateTime.utc_now(), :millisecond)
       variant = Map.fetch!(writer.variants, variant_id)
-      base_dts = {sample.dts, Variant.timescale(variant, sample.track_id)}
+      base_dts = {sample.dts || sample.pts, Variant.timescale(variant, sample.track_id)}
 
       writer.variants
       |> Map.new(fn {id, variant} ->
@@ -411,7 +412,7 @@ defmodule HLX.Writer do
     sample_queue =
       Enum.reduce(
         tracks,
-        SampleQueue.new(variant.id, @default_target_duration),
+        SampleQueue.new(variant.id, writer.segment_duration),
         &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
       )
 
@@ -431,7 +432,7 @@ defmodule HLX.Writer do
         |> Enum.flat_map(
           &Enum.map(TracksMuxer.tracks(&1.tracks_muxer), fn track -> {&1.id, track} end)
         )
-        |> Enum.reduce(PartQueue.new(@default_part_duration), fn {id, track}, queue ->
+        |> Enum.reduce(PartQueue.new(writer.part_duration), fn {id, track}, queue ->
           PartQueue.add_track(queue, id, track)
         end)
       end
@@ -443,61 +444,6 @@ defmodule HLX.Writer do
     renditions
     |> Enum.group_by(&Variant.group_id/1)
     |> Map.take(Variant.referenced_renditions(variant))
-  end
-
-  defp validate_writer_opts(options) do
-    defaults = [
-      type: :media,
-      mode: :live,
-      segment_type: :fmp4,
-      max_segments: 0,
-      storage_dir: nil
-    ]
-
-    with {:ok, validated_options} <- Keyword.validate(options, defaults),
-         :ok <- do_validate_writer_option(validated_options) do
-      validated_options =
-        if validated_options[:mode] == :vod,
-          do: Keyword.replace!(validated_options, :max_segments, 0),
-          else: validated_options
-
-      version =
-        case validated_options[:segment_type] do
-          :mpeg_ts -> 6
-          :fmp4 -> 7
-          :low_latency -> 10
-        end
-
-      {:ok, Keyword.put(validated_options, :version, version)}
-    end
-  end
-
-  defp do_validate_writer_option([]), do: :ok
-
-  defp do_validate_writer_option([{:type, type} | rest]) when type in [:media, :master] do
-    do_validate_writer_option(rest)
-  end
-
-  defp do_validate_writer_option([{:mode, mode} | rest]) when mode in [:vod, :live] do
-    do_validate_writer_option(rest)
-  end
-
-  defp do_validate_writer_option([{:segment_type, type} | rest])
-       when type in [:mpeg_ts, :fmp4, :low_latency] do
-    do_validate_writer_option(rest)
-  end
-
-  defp do_validate_writer_option([{:max_segments, max_segments} | rest])
-       when max_segments == 0 or max_segments >= 3 do
-    do_validate_writer_option(rest)
-  end
-
-  defp do_validate_writer_option([{:storage_dir, dir} | rest]) when not is_nil(dir) do
-    do_validate_writer_option(rest)
-  end
-
-  defp do_validate_writer_option([{key, value} | _rest]) do
-    {:error, "Invalid value for #{to_string(key)}: #{inspect(value)}"}
   end
 
   defimpl Inspect do

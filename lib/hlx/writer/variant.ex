@@ -12,7 +12,7 @@ defmodule HLX.Writer.Variant do
           depends_on: String.t() | nil,
           config: StreamInfo.t(),
           ready?: boolean(),
-          last_dts: %{Track.id() => non_neg_integer()},
+          first_dts: %{Track.id() => non_neg_integer()},
           base_timestamp: non_neg_integer() | nil,
           base_dts: {dts :: non_neg_integer(), timescale :: non_neg_integer()} | nil
         }
@@ -26,7 +26,7 @@ defmodule HLX.Writer.Variant do
     :config,
     :base_timestamp,
     :base_dts,
-    last_dts: %{},
+    first_dts: %{},
     ready?: false
   ]
 
@@ -79,7 +79,7 @@ defmodule HLX.Writer.Variant do
     %{
       variant
       | tracks_muxer: TracksMuxer.push_sample(variant.tracks_muxer, sample),
-        last_dts: Map.put(variant.last_dts, sample.track_id, sample.dts + sample.duration)
+        first_dts: Map.put_new(variant.first_dts, sample.track_id, sample.dts)
     }
   end
 
@@ -125,7 +125,8 @@ defmodule HLX.Writer.Variant do
           {playlist, storage}
       end
 
-    {segment, %{variant | tracks_muxer: tracks_muxer, playlist: playlist, storage: storage}}
+    {segment,
+     %{variant | tracks_muxer: tracks_muxer, playlist: playlist, storage: storage, first_dts: %{}}}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]
@@ -219,13 +220,13 @@ defmodule HLX.Writer.Variant do
   defp calculate_timestamp(%{tracks_muxer: muxer} = variant) do
     {base_dts, timescale} = variant.base_dts
 
-    last_dts =
-      Enum.reduce(variant.last_dts, 0, fn {track_id, dts}, max_dts ->
+    first_dts =
+      Enum.reduce(variant.first_dts, 0, fn {track_id, dts}, max_dts ->
         new_dts = div(dts * timescale, muxer.tracks[track_id].timescale)
         if new_dts > max_dts, do: new_dts, else: max_dts
       end)
 
-    duration = div((last_dts - base_dts) * 1000, timescale)
+    duration = div((first_dts - base_dts) * 1000, timescale)
     DateTime.from_unix!(variant.base_timestamp + duration, :millisecond)
   end
 end
