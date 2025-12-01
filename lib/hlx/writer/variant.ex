@@ -1,8 +1,7 @@
 defmodule HLX.Writer.Variant do
   @moduledoc false
 
-  alias HLX.MediaPlaylist
-  alias HLX.Storage
+  alias HLX.{MediaPlaylist, Storage, Track}
   alias HLX.Writer.{StreamInfo, TracksMuxer}
 
   @type t :: %__MODULE__{
@@ -12,10 +11,24 @@ defmodule HLX.Writer.Variant do
           storage: Storage.Segment.t(),
           depends_on: String.t() | nil,
           config: StreamInfo.t(),
-          ready?: boolean()
+          ready?: boolean(),
+          last_dts: %{Track.id() => non_neg_integer()},
+          base_timestamp: non_neg_integer() | nil,
+          base_dts: {dts :: non_neg_integer(), timescale :: non_neg_integer()} | nil
         }
 
-  defstruct [:id, :tracks_muxer, :playlist, :storage, :depends_on, :config, ready?: false]
+  defstruct [
+    :id,
+    :tracks_muxer,
+    :playlist,
+    :storage,
+    :depends_on,
+    :config,
+    :base_timestamp,
+    :base_dts,
+    last_dts: %{},
+    ready?: false
+  ]
 
   @spec new(String.t(), TracksMuxer.t(), keyword()) :: t()
   def new(id, tracks_muxer, config) do
@@ -63,7 +76,11 @@ defmodule HLX.Writer.Variant do
 
   @spec push_sample(t(), HLX.Sample.t()) :: t()
   def push_sample(%{ready?: true} = variant, sample) do
-    %{variant | tracks_muxer: TracksMuxer.push_sample(variant.tracks_muxer, sample)}
+    %{
+      variant
+      | tracks_muxer: TracksMuxer.push_sample(variant.tracks_muxer, sample),
+        last_dts: Map.put(variant.last_dts, sample.track_id, sample.dts + sample.duration)
+    }
   end
 
   def push_sample(variant, _sample), do: variant
@@ -93,7 +110,8 @@ defmodule HLX.Writer.Variant do
         index: MediaPlaylist.segment_count(variant.playlist),
         uri: uri,
         size: IO.iodata_length(data),
-        duration: duration
+        duration: duration,
+        timestamp: calculate_timestamp(variant)
       }
 
     {playlist, storage} =
@@ -173,6 +191,11 @@ defmodule HLX.Writer.Variant do
   @spec next_part_name(t()) :: String.t()
   def next_part_name(%{storage: storage}), do: Storage.Segment.next_part_uri(storage)
 
+  @spec timescale(t(), Track.id()) :: non_neg_integer()
+  def timescale(variant, track_id) do
+    variant.tracks_muxer.tracks[track_id].timescale
+  end
+
   defp save_init_header(%{tracks_muxer: muxer} = variant) when muxer.muxer_mod == HLX.Muxer.TS,
     do: variant
 
@@ -190,4 +213,19 @@ defmodule HLX.Writer.Variant do
   end
 
   defp bandwidth(%{playlist: playlist}), do: MediaPlaylist.bandwidth(playlist)
+
+  defp calculate_timestamp(%{base_timestamp: nil}), do: nil
+
+  defp calculate_timestamp(%{tracks_muxer: muxer} = variant) do
+    {base_dts, timescale} = variant.base_dts
+
+    last_dts =
+      Enum.reduce(variant.last_dts, 0, fn {track_id, dts}, max_dts ->
+        new_dts = div(dts * timescale, muxer.tracks[track_id].timescale)
+        if new_dts > max_dts, do: new_dts, else: max_dts
+      end)
+
+    duration = div((last_dts - base_dts) * 1000, timescale)
+    DateTime.from_unix!(variant.base_timestamp + duration, :millisecond)
+  end
 end

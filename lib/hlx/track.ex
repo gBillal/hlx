@@ -20,10 +20,11 @@ defmodule HLX.Track do
 
   @codecs [:h264, :h265, :hevc, :aac]
 
+  @type id :: non_neg_integer()
   @type codec :: :h264 | :h265 | :hevc | :aac | :unknown
 
   @type t :: %__MODULE__{
-          id: non_neg_integer(),
+          id: id(),
           type: :video | :audio,
           codec: codec(),
           timescale: non_neg_integer(),

@@ -228,7 +228,20 @@ defmodule HLX.Writer do
           %{writer | variants: variants, queues: queues}
       end
 
-    write_sample(%{writer | state: :muxing}, variant_id, sample)
+    if writer.mode == :live do
+      base_timestamp = DateTime.to_unix(sample.timestamp || DateTime.utc_now(), :millisecond)
+      variant = Map.fetch!(writer.variants, variant_id)
+      base_dts = {sample.dts, Variant.timescale(variant, sample.track_id)}
+
+      writer.variants
+      |> Map.new(fn {id, variant} ->
+        {id, %{variant | base_timestamp: base_timestamp, base_dts: base_dts}}
+      end)
+      |> then(&%{writer | variants: &1, state: :muxing})
+      |> write_sample(variant_id, sample)
+    else
+      write_sample(%{writer | state: :muxing}, variant_id, sample)
+    end
   end
 
   def write_sample(writer, variant_id, sample) do
