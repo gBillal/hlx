@@ -1,5 +1,7 @@
 defmodule HLX.Part do
-  @moduledoc false
+  @moduledoc """
+  Module describing a partial segment in an HLS playlist.
+  """
 
   alias ExM3U8.Tags
 

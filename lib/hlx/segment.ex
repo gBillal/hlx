@@ -1,5 +1,7 @@
 defmodule HLX.Segment do
-  @moduledoc false
+  @moduledoc """
+  Module describing a media segment in an HLS playlist.
+  """
 
   alias ExM3U8.Tags
 
