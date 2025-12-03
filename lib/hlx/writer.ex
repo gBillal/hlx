@@ -18,13 +18,6 @@ defmodule HLX.Writer do
         ]
 
   @type variant_opts :: [{:tracks, [HLX.Track.t()]} | {:audio, String.t()}]
-  @type new_opts :: [
-          {:type, :master | :media}
-          | {:mode, mode()}
-          | {:segment_type, segment_type()}
-          | {:max_segments, non_neg_integer()}
-          | {:storage_dir, Path.t()}
-        ]
 
   @opaque t :: %__MODULE__{
             type: :master | :media,
@@ -38,7 +31,9 @@ defmodule HLX.Writer do
             storage_dir: Path.t(),
             variants: %{String.t() => Variant.t()},
             queues: %{String.t() => {SampleQueue.t(), PartQueue.t() | nil}},
-            state: :init | :muxing | :closed
+            state: :init | :muxing | :closed,
+            on_segment_created: (String.t(), HLX.Segment.t() -> any()) | nil,
+            on_part_created: (String.t(), HLX.Part.t() -> any()) | nil
           }
 
   defstruct [
@@ -51,6 +46,8 @@ defmodule HLX.Writer do
     :part_duration,
     :lead_variant,
     :storage_dir,
+    :on_segment_created,
+    :on_part_created,
     variants: %{},
     queues: %{},
     state: :init
@@ -67,6 +64,12 @@ defmodule HLX.Writer do
     * `storage_dir` - The directory where to store the playlists and segments. This is required.
     * `segment_duration` - The target duration of each segment in milliseconds. Defaults to 2000.
     * `part_duration` - The target duration of each part in milliseconds (only for low-latency segments). Defaults to 300.
+
+  You can provide callbacks for segment and part creation by adding the following options:
+    * `on_segment_created` - A 2-arity function that will be called when a new segment is created.
+      The fuction receives two arguments: the variant id and the segment info.
+    * `on_part_created` - A 2-arity function that will be called when a new part is created.
+      The fuction receives two arguments: the variant id and the part info.
   """
   @spec new(Keyword.t()) :: {:ok, t()}
   def new(options) do
@@ -272,9 +275,11 @@ defmodule HLX.Writer do
   """
   @spec close(t()) :: :ok
   def close(writer) do
+    {new_segments, writer} = flush_and_write(writer)
+
     writer
-    |> flush_and_write()
     |> serialize_playlists(true)
+    |> maybe_invoke_callbacks(new_segments)
 
     :ok
   end
@@ -288,10 +293,10 @@ defmodule HLX.Writer do
   defp handle_sample_queue(writer, sample_queue, id, sample) do
     {flush?, samples, queue} = SampleQueue.push_sample(sample_queue, id, sample)
 
-    writer =
+    {new_segments, writer} =
       if flush?,
         do: flush_and_write(writer, SampleQueue.track_ids(queue)),
-        else: writer
+        else: {[], writer}
 
     writer = %{
       writer
@@ -299,37 +304,46 @@ defmodule HLX.Writer do
         queues: Map.put(writer.queues, queue.id, {queue, nil})
     }
 
-    if flush?,
-      do: serialize_playlists(writer),
-      else: writer
+    writer =
+      if flush?,
+        do: serialize_playlists(writer),
+        else: writer
+
+    maybe_invoke_callbacks(writer, new_segments)
   end
 
   defp handle_part_queue(writer, {sample_queue, part_queue}, id, sample) do
     {flush?, samples, queue} = SampleQueue.push_sample(sample_queue, id, sample)
 
-    {writer, part_queue} =
+    {writer, part_queue, {segments, partial_segments1}} =
       if flush? do
         {parts, part_queue} = PartQueue.flush(part_queue)
 
-        {writer, _stored_parts} = push_parts(parts, writer)
-        writer = flush_and_write(writer, SampleQueue.track_ids(queue))
+        {partial_segments, writer} = push_parts(parts, writer)
+        {segments, writer} = flush_and_write(writer, SampleQueue.track_ids(queue))
 
-        {writer, part_queue}
+        {writer, part_queue, {segments, partial_segments}}
       else
-        {writer, part_queue}
+        {writer, part_queue, {[], []}}
       end
 
     {parts, part_queue} =
-      Enum.map_reduce(samples, part_queue, fn {id, sample}, queue ->
-        PartQueue.push_sample(queue, id, sample)
+      Enum.reduce(samples, {[], part_queue}, fn {id, sample}, {parts, queue} ->
+        case PartQueue.push_sample(queue, id, sample) do
+          {[], queue} -> {parts, queue}
+          {new_parts, queue} -> {[new_parts | parts], queue}
+        end
       end)
 
     writer = %{writer | queues: Map.put(writer.queues, queue.id, {queue, part_queue})}
-    {writer, _stored_parts2} = push_parts(Enum.concat(parts), writer)
+    {partial_segments2, writer} = push_parts(Enum.concat(parts), writer)
 
-    if flush? or parts != [],
-      do: serialize_playlists(writer),
-      else: writer
+    writer =
+      if flush? or parts != [],
+        do: serialize_playlists(writer),
+        else: writer
+
+    maybe_invoke_callbacks(writer, segments, partial_segments1 ++ partial_segments2)
   end
 
   defp push_parts(parts, writer) do
@@ -338,26 +352,25 @@ defmodule HLX.Writer do
       fn {{variant_id, _track_id}, _samples} -> variant_id end,
       fn {{_variant_id, track_id}, samples} -> {track_id, samples} end
     )
-    |> Enum.reduce({writer, %{}}, fn {variant_id, parts}, {writer, new_parts} ->
+    |> Enum.map_reduce(writer, fn {variant_id, parts}, writer ->
       {part, variant} = Variant.push_parts(writer.variants[variant_id], parts)
-
       writer = %{writer | variants: Map.put(writer.variants, variant_id, variant)}
-      {writer, Map.put(new_parts, variant_id, part)}
+      {{variant_id, part}, writer}
     end)
   end
 
-  defp flush_and_write(writer, variant_ids \\ nil) do
-    variants =
-      Map.new(writer.variants, fn {_variant_id, variant} ->
-        if variant_ids == nil or variant.id in variant_ids do
-          {_segment, variant} = Variant.flush(variant)
-          {variant.id, variant}
-        else
-          {variant.id, variant}
-        end
+  defp flush_and_write(%{variants: variants} = writer, variant_ids \\ nil) do
+    {new_segments, variants} =
+      variants
+      |> Stream.filter(fn {variant_id, _variant} ->
+        variant_ids == nil or variant_id in variant_ids
+      end)
+      |> Enum.map_reduce(variants, fn {variant_id, variant}, variants ->
+        {segment, variant} = Variant.flush(variant)
+        {{variant_id, segment}, Map.replace!(variants, variant_id, variant)}
       end)
 
-    %{writer | variants: Map.new(variants)}
+    {new_segments, %{writer | variants: Map.new(variants)}}
   end
 
   defp serialize_playlists(writer, end_list? \\ false)
@@ -446,10 +459,27 @@ defmodule HLX.Writer do
     |> Map.take(Variant.referenced_renditions(variant))
   end
 
+  defp maybe_invoke_callbacks(writer, new_segments, new_parts \\ []) do
+    if writer.on_part_created do
+      Enum.each(new_parts, fn {variant_id, part} ->
+        writer.on_part_created.(variant_id, part)
+      end)
+    end
+
+    if writer.on_segment_created do
+      Enum.each(new_segments, fn {variant_id, segment} ->
+        writer.on_segment_created.(variant_id, segment)
+      end)
+    end
+
+    writer
+  end
+
   defimpl Inspect do
     def inspect(writer, _opts) do
-      "#HLX.Writer<type: #{writer.type}, variants: #{map_size(writer.variants)}, " <>
-        "lead_variant: #{writer.lead_variant}, max_segments: #{writer.max_segments}>"
+      "#HLX.Writer<type: #{writer.type}, mode: #{writer.mode}, segment_type: #{writer.segment_type}, " <>
+        "variants: #{map_size(writer.variants)}, lead_variant: #{writer.lead_variant}, " <>
+        "max_segments: #{writer.max_segments}>"
     end
   end
 end

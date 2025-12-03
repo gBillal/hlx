@@ -333,6 +333,55 @@ defmodule HLX.WriterTest do
     end
   end
 
+  describe "Low latency" do
+    test "audio video", %{audio_track: audio_track, video_track: video_track, tmp_dir: dir} do
+      writer =
+        Writer.new!(type: :master, storage_dir: dir, segment_type: :low_latency)
+        |> Writer.add_rendition!("audio", track: audio_track, group_id: "audio-group")
+        |> Writer.add_variant!("video", tracks: [video_track], audio: "audio-group")
+
+      assert :ok =
+               writer
+               |> write_video_samples("video")
+               |> write_audio_samples("audio")
+               |> Writer.close()
+
+      master_playlist = Path.join(dir, "master.m3u8")
+      video_playlist = Path.join(dir, "video.m3u8")
+      audio_playlist = Path.join(dir, "audio.m3u8")
+
+      assert File.exists?(master_playlist)
+      assert File.exists?(video_playlist)
+      assert File.exists?(audio_playlist)
+
+      assert {:ok, media_playlist} =
+               ExM3U8.deserialize_multivariant_playlist(File.read!(master_playlist))
+
+      assert %ExM3U8.MultivariantPlaylist{version: 9, items: items} = media_playlist
+      assert length(items) == 2
+
+      for {name, playlist} <- [{"video", video_playlist}, {"audio", audio_playlist}] do
+        uri = "#{name}/init_0.mp4"
+
+        assert {:ok, playlist} = ExM3U8.deserialize_media_playlist(File.read!(playlist))
+
+        assert %{
+                 timeline: [%ExM3U8.Tags.MediaInit{uri: ^uri} | _segments],
+                 info: %{target_duration: target_duration, media_sequence: 0}
+               } = playlist
+
+        assert target_duration in [2, 3]
+        assert File.exists?(Path.join(dir, uri))
+
+        segments = Enum.filter(playlist.timeline, &is_struct(&1, ExM3U8.Tags.Segment))
+        partial_segments = Enum.filter(playlist.timeline, &is_struct(&1, ExM3U8.Tags.Part))
+
+        assert length(segments) == 5
+        assert length(partial_segments) > 0
+      end
+    end
+  end
+
   defp write_audio_samples(writer, variant) do
     "test/fixtures/audio.aac"
     |> File.stream!(1024)

@@ -113,7 +113,7 @@ defmodule HLX.MediaPlaylist do
     server_control =
       if state.part_target_duration do
         %ExM3U8.MediaPlaylist.ServerControl{
-          can_block_reload?: Keyword.get(opts, :can_block_reload?, true),
+          can_block_reload?: Keyword.get(opts, :can_block_reload?, false),
           hold_back: state.target_duration * 3,
           part_hold_back: state.part_target_duration * 3
         }

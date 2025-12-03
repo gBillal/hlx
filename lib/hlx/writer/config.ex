@@ -10,7 +10,9 @@ defmodule HLX.Writer.Config do
           segment_duration: non_neg_integer(),
           part_duration: non_neg_integer(),
           max_segments: non_neg_integer(),
-          storage_dir: String.t() | nil
+          storage_dir: String.t() | nil,
+          on_segment_created: (String.t(), HLX.Segment.t() -> any()) | nil,
+          on_part_created: (String.t(), HLX.Part.t() -> any()) | nil
         ]
 
   @default_config [
@@ -20,7 +22,9 @@ defmodule HLX.Writer.Config do
     segment_duration: 2000,
     part_duration: 300,
     max_segments: 6,
-    storage_dir: nil
+    storage_dir: nil,
+    on_segment_created: nil,
+    on_part_created: nil
   ]
 
   @spec new(Keyword.t()) :: {:ok, t()} | {:error, String.t()}
@@ -38,7 +42,7 @@ defmodule HLX.Writer.Config do
           case options[:segment_type] do
             :mpeg_ts -> 6
             :fmp4 -> 7
-            :low_latency -> 10
+            :low_latency -> 9
           end
 
         {:ok, Keyword.put(options, :version, version)}
@@ -78,6 +82,16 @@ defmodule HLX.Writer.Config do
 
   defp validate([{:part_duration, duration} | rest])
        when is_integer(duration) and duration >= 100 do
+    validate(rest)
+  end
+
+  defp validate([{:on_segment_created, callback} | rest])
+       when is_function(callback, 2) or is_nil(callback) do
+    validate(rest)
+  end
+
+  defp validate([{:on_part_created, callback} | rest])
+       when is_function(callback, 2) or is_nil(callback) do
     validate(rest)
   end
 
