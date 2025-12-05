@@ -382,6 +382,39 @@ defmodule HLX.WriterTest do
     end
   end
 
+  describe "Add discontinuity" do
+    test "audio video", %{audio_track: audio_track, video_track: video_track, tmp_dir: dir} do
+      writer =
+        Writer.new!(type: :master, storage_dir: dir, segment_type: :mpeg_ts, max_segments: 7)
+        |> Writer.add_rendition!("audio", track: audio_track, group_id: "audio-group")
+        |> Writer.add_variant!("video", tracks: [video_track], audio: "audio-group")
+
+      assert :ok =
+               writer
+               |> write_video_samples("video")
+               |> write_audio_samples("audio")
+               |> Writer.add_discontinuity()
+               |> write_video_samples("video")
+               |> write_audio_samples("audio")
+               |> Writer.close()
+
+      video_playlist = Path.join(dir, "video.m3u8")
+      audio_playlist = Path.join(dir, "audio.m3u8")
+
+      assert {:ok, video_playlist} = ExM3U8.deserialize_media_playlist(File.read!(video_playlist))
+      assert {:ok, audio_playlist} = ExM3U8.deserialize_media_playlist(File.read!(audio_playlist))
+
+      video_discontinuities =
+        Enum.filter(video_playlist.timeline, &is_struct(&1, ExM3U8.Tags.Discontinuity))
+
+      audio_discontinuities =
+        Enum.filter(audio_playlist.timeline, &is_struct(&1, ExM3U8.Tags.Discontinuity))
+
+      assert length(video_discontinuities) == 1
+      assert length(audio_discontinuities) == 1
+    end
+  end
+
   defp write_audio_samples(writer, variant) do
     "test/fixtures/audio.aac"
     |> File.stream!(1024)

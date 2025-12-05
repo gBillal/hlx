@@ -254,17 +254,31 @@ defmodule HLX.Writer do
     {sample, variant} = Variant.process_sample(variant, sample)
     writer = %{writer | variants: Map.put(writer.variants, variant_id, variant)}
 
-    {sample_queue, part_queue} =
-      case variant.depends_on do
-        nil -> writer.queues[variant_id]
-        id -> writer.queues[id]
-      end
-
+    {sample_queue, part_queue} = get_queues(writer, variant)
     id = {variant_id, sample.track_id}
 
     if part_queue,
       do: handle_part_queue(writer, {sample_queue, part_queue}, id, sample),
       else: handle_sample_queue(writer, sample_queue, id, sample)
+  end
+
+  @doc """
+  Adds a discontinuity to the playlist.
+
+  This flushes any pending segments, so make sure all the samples are written before
+  and adds a discontinuity to the specified variant or to all variants if no
+  `variant_id` is provided.
+  """
+  @spec add_discontinuity(t(), String.t() | nil) :: t()
+  def add_discontinuity(writer, variant_id \\ nil) do
+    variants =
+      if variant_id,
+        do: [Map.fetch!(writer.variants, variant_id)],
+        else: Map.values(writer.variants)
+
+    Enum.reduce(variants, writer, fn variant, writer ->
+      do_add_discontinuity(writer, variant)
+    end)
   end
 
   @doc """
@@ -293,23 +307,24 @@ defmodule HLX.Writer do
   defp handle_sample_queue(writer, sample_queue, id, sample) do
     {flush?, samples, queue} = SampleQueue.push_sample(sample_queue, id, sample)
 
-    {new_segments, writer} =
-      if flush?,
-        do: flush_and_write(writer, SampleQueue.track_ids(queue)),
-        else: {[], writer}
+    writer =
+      case flush? do
+        true ->
+          {segments, writer} = flush_and_write(writer, SampleQueue.track_ids(queue))
 
-    writer = %{
+          writer
+          |> serialize_playlists()
+          |> maybe_invoke_callbacks(segments)
+
+        false ->
+          writer
+      end
+
+    %{
       writer
       | variants: push_samples(samples, writer.variants),
         queues: Map.put(writer.queues, queue.id, {queue, nil})
     }
-
-    writer =
-      if flush?,
-        do: serialize_playlists(writer),
-        else: writer
-
-    maybe_invoke_callbacks(writer, new_segments)
   end
 
   defp handle_part_queue(writer, {sample_queue, part_queue}, id, sample) do
@@ -327,14 +342,7 @@ defmodule HLX.Writer do
         {writer, part_queue, {[], []}}
       end
 
-    {parts, part_queue} =
-      Enum.reduce(samples, {[], part_queue}, fn {id, sample}, {parts, queue} ->
-        case PartQueue.push_sample(queue, id, sample) do
-          {[], queue} -> {parts, queue}
-          {new_parts, queue} -> {[new_parts | parts], queue}
-        end
-      end)
-
+    {parts, part_queue} = push_samples_to_part_queue(part_queue, samples)
     writer = %{writer | queues: Map.put(writer.queues, queue.id, {queue, part_queue})}
     {partial_segments2, writer} = push_parts(Enum.concat(parts), writer)
 
@@ -344,6 +352,42 @@ defmodule HLX.Writer do
         else: writer
 
     maybe_invoke_callbacks(writer, segments, partial_segments1 ++ partial_segments2)
+  end
+
+  defp do_add_discontinuity(writer, variant) do
+    {sample_queue, part_queue} = get_queues(writer, variant)
+    {samples, sample_queue} = SampleQueue.flush(sample_queue)
+
+    {writer, segments, partial_segments} =
+      if part_queue do
+        {parts1, part_queue} = push_samples_to_part_queue(part_queue, samples)
+        {parts2, part_queue} = PartQueue.flush(part_queue)
+
+        {partial_segments, writer} = push_parts(parts1 ++ parts2, writer)
+        {segments, writer} = flush_and_write(writer, SampleQueue.track_ids(sample_queue))
+
+        writer = %{
+          writer
+          | queues: Map.put(writer.queues, variant.id, {sample_queue, part_queue})
+        }
+
+        {writer, segments, partial_segments}
+      else
+        writer = %{
+          writer
+          | variants: push_samples(samples, writer.variants),
+            queues: Map.put(writer.queues, variant.id, {sample_queue, nil})
+        }
+
+        {segments, writer} = flush_and_write(writer, SampleQueue.track_ids(sample_queue))
+        {writer, segments, []}
+      end
+
+    variants = Map.update!(writer.variants, variant.id, &Variant.add_discontinuity(&1))
+
+    %{writer | variants: variants}
+    |> serialize_playlists()
+    |> maybe_invoke_callbacks(segments, partial_segments)
   end
 
   defp push_parts(parts, writer) do
@@ -362,15 +406,35 @@ defmodule HLX.Writer do
   defp flush_and_write(%{variants: variants} = writer, variant_ids \\ nil) do
     {new_segments, variants} =
       variants
-      |> Stream.filter(fn {variant_id, _variant} ->
-        variant_ids == nil or variant_id in variant_ids
-      end)
-      |> Enum.map_reduce(variants, fn {variant_id, variant}, variants ->
-        {segment, variant} = Variant.flush(variant)
-        {{variant_id, segment}, Map.replace!(variants, variant_id, variant)}
+      |> Map.values()
+      |> Stream.filter(&(variant_ids == nil or &1.id in variant_ids))
+      |> Enum.reduce({[], variants}, fn variant, {segments, variants} ->
+        case Variant.flush(variant) do
+          {nil, variant} ->
+            {segments, Map.put(variants, variant.id, variant)}
+
+          {segment, variant} ->
+            {[{variant.id, segment} | segments], Map.put(variants, variant.id, variant)}
+        end
       end)
 
     {new_segments, %{writer | variants: Map.new(variants)}}
+  end
+
+  defp get_queues(writer, variant) do
+    case variant.depends_on do
+      nil -> writer.queues[variant.id]
+      id -> writer.queues[id]
+    end
+  end
+
+  defp push_samples_to_part_queue(part_queue, samples) do
+    Enum.reduce(samples, {[], part_queue}, fn {id, sample}, {parts, queue} ->
+      case PartQueue.push_sample(queue, id, sample) do
+        {[], queue} -> {parts, queue}
+        {new_parts, queue} -> {[new_parts | parts], queue}
+      end
+    end)
   end
 
   defp serialize_playlists(writer, end_list? \\ false)

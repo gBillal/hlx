@@ -103,30 +103,46 @@ defmodule HLX.Writer.Variant do
   @spec flush(t()) :: {HLX.Segment.t(), t()}
   def flush(variant) do
     {data, duration, tracks_muxer} = TracksMuxer.flush(variant.tracks_muxer)
-    {uri, storage} = Storage.Segment.store_segment(data, variant.storage)
 
-    segment =
-      %HLX.Segment{
-        index: MediaPlaylist.segment_count(variant.playlist),
-        uri: uri,
-        size: IO.iodata_length(data),
-        duration: duration,
-        timestamp: calculate_timestamp(variant)
-      }
+    if duration == 0 do
+      {nil, variant}
+    else
+      {uri, storage} = Storage.Segment.store_segment(data, variant.storage)
 
-    {playlist, storage} =
-      case MediaPlaylist.add_segment(variant.playlist, segment) do
-        {playlist, nil, parts} ->
-          {playlist, Storage.Segment.delete_parts(parts, storage)}
+      segment =
+        %HLX.Segment{
+          index: MediaPlaylist.segment_count(variant.playlist),
+          uri: uri,
+          size: IO.iodata_length(data),
+          duration: duration,
+          timestamp: calculate_timestamp(variant)
+        }
 
-        {playlist, discarded, parts} ->
-          storage = Storage.Segment.delete_segment(discarded, storage)
-          storage = Storage.Segment.delete_parts(parts, storage)
-          {playlist, storage}
-      end
+      {playlist, storage} =
+        case MediaPlaylist.add_segment(variant.playlist, segment) do
+          {playlist, nil, parts} ->
+            {playlist, Storage.Segment.delete_parts(parts, storage)}
 
-    {segment,
-     %{variant | tracks_muxer: tracks_muxer, playlist: playlist, storage: storage, first_dts: %{}}}
+          {playlist, discarded, parts} ->
+            storage = Storage.Segment.delete_segment(discarded, storage)
+            storage = Storage.Segment.delete_parts(parts, storage)
+            {playlist, storage}
+        end
+
+      {segment,
+       %{
+         variant
+         | tracks_muxer: tracks_muxer,
+           playlist: playlist,
+           storage: storage,
+           first_dts: %{}
+       }}
+    end
+  end
+
+  @spec add_discontinuity(t()) :: t()
+  def add_discontinuity(variant) do
+    %{variant | playlist: MediaPlaylist.add_discontinuity(variant.playlist), ready?: false}
   end
 
   @spec referenced_renditions(t()) :: [String.t()]

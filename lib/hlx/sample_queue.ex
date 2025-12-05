@@ -66,7 +66,7 @@ defmodule HLX.SampleQueue do
     new_segment? = sample.sync? and track.duration >= sample_queue.target_duration
 
     should_buffer? =
-      new_segment? and not flush?(sample_queue) and map_size(sample_queue.tracks) > 1
+      new_segment? and not flush_queue?(sample_queue) and map_size(sample_queue.tracks) > 1
 
     cond do
       track.buffer? or should_buffer? ->
@@ -106,7 +106,7 @@ defmodule HLX.SampleQueue do
         track = push(track, sample)
         sample_queue = %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}
 
-        if flush?(sample_queue) do
+        if flush_queue?(sample_queue) do
           {sample_queue, lead_sample} = drain_lead_track(sample_queue)
           {sample_queue, samples} = drain_queues(sample_queue)
           {true, Enum.concat(lead_sample, samples), sample_queue}
@@ -118,6 +118,19 @@ defmodule HLX.SampleQueue do
         track = push(track, sample)
         {false, [], %{sample_queue | tracks: Map.put(sample_queue.tracks, id, track)}}
     end
+  end
+
+  def flush(sample_queue) do
+    {sample_queue, lead_sample} = drain_lead_track(sample_queue)
+    {sample_queue, samples} = drain_queues(sample_queue)
+
+    tracks =
+      Map.new(sample_queue.tracks, fn {id, track} ->
+        {id, %{track | buffer?: false, duration: 0, queue_size: 0, queue: Qex.new()}}
+      end)
+
+    {Enum.concat(lead_sample, samples),
+     %{sample_queue | tracks: tracks, last_sample_timestamp: 0}}
   end
 
   defp push(track, sample, where \\ :back)
@@ -137,7 +150,7 @@ defmodule HLX.SampleQueue do
     {sample, %{track | queue: queue, queue_size: track.queue_size - 1}}
   end
 
-  defp flush?(sample_queue) do
+  defp flush_queue?(sample_queue) do
     Enum.all?(sample_queue.tracks, fn {id, track} ->
       track.queue_size > 0 or id == sample_queue.lead_track
     end)

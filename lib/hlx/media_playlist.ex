@@ -87,12 +87,8 @@ defmodule HLX.MediaPlaylist do
 
   @spec add_discontinuity(t()) :: t()
   def add_discontinuity(%__MODULE__{} = state) do
-    # new_playlist = %MediaPlaylist{
-    #   playlist
-    #   | timeline: [%Tags.Discontinuity{} | playlist.timeline]
-    # }
-
-    state
+    {segment, segments} = Qex.pop_back!(state.segments)
+    %{state | segments: Qex.push(segments, %{segment | discontinuity?: true})}
   end
 
   @spec to_m3u8(t(), keyword()) :: ExM3U8.MediaPlaylist.t()
