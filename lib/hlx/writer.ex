@@ -107,6 +107,8 @@ defmodule HLX.Writer do
   @spec add_rendition(t(), String.t(), rendition_opts()) :: {:ok, t()} | {:error, any()}
   def add_rendition(%{type: :media}, _name, _opts), do: {:error, :not_master_playlist}
 
+  def add_rendition(%{state: state}, _name, _opts) when state != :init, do: {:error, :bad_state}
+
   def add_rendition(writer, name, opts) do
     # Validate options
     muxer_options = [segment_type: writer.segment_type, max_segments: writer.max_segments]
@@ -149,6 +151,8 @@ defmodule HLX.Writer do
       when writer.type == :media and map_size(writer.variants) >= 1 do
     {:error, "Media playlist support only one variant"}
   end
+
+  def add_variant(%{state: state}, _name, _opts) when state != :init, do: {:error, :bad_state}
 
   def add_variant(writer, name, options) do
     # TODO: validate options
@@ -232,23 +236,11 @@ defmodule HLX.Writer do
           %{writer | variants: variants, queues: queues}
       end
 
-    if writer.mode == :live do
-      base_timestamp = DateTime.to_unix(sample.timestamp || DateTime.utc_now(), :millisecond)
-      variant = Map.fetch!(writer.variants, variant_id)
-      base_dts = {sample.dts || sample.pts, Variant.timescale(variant, sample.track_id)}
-
-      writer.variants
-      |> Map.new(fn {id, variant} ->
-        {id, %{variant | base_timestamp: base_timestamp, base_dts: base_dts}}
-      end)
-      |> then(&%{writer | variants: &1, state: :muxing})
-      |> write_sample(variant_id, sample)
-    else
-      write_sample(%{writer | state: :muxing}, variant_id, sample)
-    end
+    write_sample(%{writer | state: :muxing}, variant_id, sample)
   end
 
   def write_sample(writer, variant_id, sample) do
+    writer = maybe_set_base_timestamp(writer, Map.fetch!(writer.variants, variant_id), sample)
     variant = Map.fetch!(writer.variants, variant_id)
 
     {sample, variant} = Variant.process_sample(variant, sample)
@@ -276,9 +268,17 @@ defmodule HLX.Writer do
         do: [Map.fetch!(writer.variants, variant_id)],
         else: Map.values(writer.variants)
 
-    Enum.reduce(variants, writer, fn variant, writer ->
-      do_add_discontinuity(writer, variant)
-    end)
+    writer =
+      Enum.reduce(variants, writer, fn variant, writer ->
+        do_add_discontinuity(writer, variant)
+      end)
+
+    variants =
+      Map.new(writer.variants, fn {id, variant} ->
+        {id, %{variant | base_timestamp: nil, base_dts: nil}}
+      end)
+
+    %{writer | variants: variants}
   end
 
   @doc """
@@ -537,6 +537,23 @@ defmodule HLX.Writer do
     end
 
     writer
+  end
+
+  defp maybe_set_base_timestamp(%{mode: :vod} = writer, _variant, _sample), do: writer
+
+  defp maybe_set_base_timestamp(writer, %{base_timestamp: base}, _sample) when not is_nil(base),
+    do: writer
+
+  defp maybe_set_base_timestamp(%{variants: variants} = writer, variant, sample) do
+    timestamp = DateTime.to_unix(sample.timestamp || DateTime.utc_now(), :millisecond)
+    base_dts = {sample.dts || sample.pts, Variant.timescale(variant, sample.track_id)}
+
+    variants =
+      Enum.reduce(variants, %{}, fn {id, variant}, acc ->
+        Map.put(acc, id, %{variant | base_timestamp: timestamp, base_dts: base_dts})
+      end)
+
+    %{writer | variants: variants}
   end
 
   defimpl Inspect do
