@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.0 - 2025-12-05
+
+* Add discontinuity.
+
 ## v0.2.0 - 2025-12-03
 
 * Add low latency HLS support.
