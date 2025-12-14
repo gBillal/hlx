@@ -8,17 +8,20 @@ defmodule HLX.Track do
   `priv_data` contains codec specific initialization data. The format of the field is:
     * `h264` - For H.264 it's a tuple of sps and a list of pps
     * `h265` - For H.265 or HEVC it's a tuple of vps, sps and a list of pps.
+    * `av1` - For AV1 it's a list of config OBUs (usually sequence header) as a bitstream.
     * `aac` - For AAC it's a binary describing the audio specific configuration.
 
   The `priv_data` is not mandatory if:
     * H.264 samples have in-band parameter sets.
     * H.265 samples have in-band parameter sets.
+    * AV1 samples have in-band sequence header OBU.
   """
 
   alias ExMP4.Box
   alias MediaCodecs.{MPEG4, H264, H265}
+  alias MediaCodecs.AV1.OBU
 
-  @codecs [:h264, :h265, :hevc, :aac]
+  @codecs [:h264, :h265, :hevc, :aac, :av1]
 
   @type id :: non_neg_integer()
   @type codec :: :h264 | :h265 | :hevc | :aac | :unknown
@@ -70,59 +73,31 @@ defmodule HLX.Track do
   @spec to_mp4_track(t()) :: ExMP4.Track.t()
   def to_mp4_track(%{codec: :h264} = track) do
     {sps, pps} = track.priv_data
-
-    %ExMP4.Track{
-      id: track.id,
-      type: track.type,
-      media: track.codec,
-      timescale: track.timescale,
-      width: track.width,
-      height: track.height,
-      priv_data: Box.Avcc.new([sps], List.wrap(pps)),
-      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
-      trex: %Box.Trex{
-        track_id: track.id,
-        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
-      }
-    }
+    %{set_common_fields(track) | priv_data: Box.Avcc.new([sps], List.wrap(pps))}
   end
 
   def to_mp4_track(%{codec: codec} = track) when codec in [:hevc, :h265] do
     {vps, sps, pps} = track.priv_data
 
-    %ExMP4.Track{
-      id: track.id,
-      type: track.type,
-      media: :h265,
-      timescale: track.timescale,
-      width: track.width,
-      height: track.height,
-      priv_data: Box.Hvcc.new([vps], [sps], List.wrap(pps)),
-      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
-      trex: %Box.Trex{
-        track_id: track.id,
-        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
-      }
+    %{
+      set_common_fields(track)
+      | media: :h265,
+        priv_data: Box.Hvcc.new([vps], [sps], List.wrap(pps))
     }
+  end
+
+  def to_mp4_track(%{codec: :av1} = track) do
+    %{set_common_fields(track) | priv_data: Box.Av1c.new(track.priv_data)}
   end
 
   def to_mp4_track(%{codec: :aac, priv_data: priv_data} = track) do
     audio_sepecific_config = MPEG4.AudioSpecificConfig.serialize(priv_data)
 
-    %ExMP4.Track{
-      id: track.id,
-      type: track.type,
-      media: :aac,
-      media_tag: :esds,
-      timescale: track.timescale,
-      channels: priv_data.channels,
-      sample_rate: priv_data.sampling_frequency,
-      priv_data: Box.Esds.new(audio_sepecific_config),
-      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
-      trex: %Box.Trex{
-        track_id: track.id,
-        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
-      }
+    %{
+      set_common_fields(track)
+      | channels: priv_data.channels,
+        sample_rate: priv_data.sampling_frequency,
+        priv_data: Box.Esds.new(audio_sepecific_config)
     }
   end
 
@@ -156,6 +131,8 @@ defmodule HLX.Track do
     end
   end
 
+  defp priv_data(:av1, av1c), do: av1c.config_obus
+
   defp priv_data(:aac, esds) do
     [descriptor] = MediaCodecs.MPEG4.parse_descriptors(esds.es_descriptor)
     descriptor.dec_config_descr.decoder_specific_info
@@ -188,6 +165,17 @@ defmodule HLX.Track do
     }
   end
 
+  defp update_fields(%{codec: :av1, priv_data: obu} = track) do
+    %{payload: sequence_header} = OBU.parse!(obu)
+
+    %{
+      track
+      | mime: OBU.SequenceHeader.mime_type(sequence_header),
+        width: OBU.SequenceHeader.width(sequence_header),
+        height: OBU.SequenceHeader.height(sequence_header)
+    }
+  end
+
   defp update_fields(%{codec: :aac, priv_data: audio_specific_config} = track) do
     audio_specific_config =
       if is_binary(audio_specific_config),
@@ -198,6 +186,22 @@ defmodule HLX.Track do
       track
       | priv_data: audio_specific_config,
         mime: "mp4a.40.#{audio_specific_config.object_type}"
+    }
+  end
+
+  defp set_common_fields(track) do
+    %ExMP4.Track{
+      id: track.id,
+      type: track.type,
+      media: track.codec,
+      timescale: track.timescale,
+      width: track.width,
+      height: track.height,
+      sample_table: %Box.Stbl{stsz: %Box.Stsz{}, stco: %Box.Stco{}},
+      trex: %Box.Trex{
+        track_id: track.id,
+        default_sample_flags: if(track.type == :video, do: 0x10000, else: 0)
+      }
     }
   end
 end

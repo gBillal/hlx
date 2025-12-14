@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.0 - 2025-12-14
+
+* Add support for AV1 codec.
+
 ## v0.3.0 - 2025-12-05
 
 * Add discontinuity.

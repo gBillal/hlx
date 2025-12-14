@@ -2,7 +2,7 @@ defmodule HLX.SampleProcessor do
   @moduledoc false
 
   alias HLX.Track
-  alias MediaCodecs.{H264, H265, MPEG4}
+  alias MediaCodecs.{AV1, H264, H265, MPEG4}
 
   @type container :: :mpeg_ts | :fmp4
 
@@ -56,6 +56,18 @@ defmodule HLX.SampleProcessor do
       end
 
     {track, %{sample | payload: payload, sync?: keyframe?}}
+  end
+
+  def process_sample(%{codec: :av1, priv_data: nil} = track, sample, :fmp4) do
+    obus = if is_list(track.payload), do: track.payload, else: AV1.obus(track.payload)
+    track = %{track | priv_data: Enum.find(obus, &(AV1.OBU.type(&1) == :sequence_header))}
+    {track, sample}
+  end
+
+  def process_sample(%{codec: :av1} = track, sample, :fmp4), do: {track, sample}
+
+  def process_sample(%{codec: :av1}, _sample, container) do
+    raise "Unsupported container #{inspect(container)} for AV1 samples"
   end
 
   def process_sample(%{codec: :aac} = track, sample, container) do
