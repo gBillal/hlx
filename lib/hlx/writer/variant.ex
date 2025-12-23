@@ -160,11 +160,12 @@ defmodule HLX.Writer.Variant do
         StreamInfo.to_media(variant.config)
 
       _ ->
+        referenced_renditions = Map.values(referenced_renditions)
+
         referenced_codecs =
           referenced_renditions
-          |> Map.values()
           |> List.flatten()
-          |> Enum.flat_map(&TracksMuxer.tracks(&1.tracks_muxer))
+          |> Stream.flat_map(&TracksMuxer.tracks(&1.tracks_muxer))
           |> Enum.map(& &1.mime)
 
         tracks = TracksMuxer.tracks(variant.tracks_muxer)
@@ -183,11 +184,9 @@ defmodule HLX.Writer.Variant do
           end)
 
         {avg_bitrates, max_bitrates} =
-          referenced_renditions
-          |> Map.values()
-          |> Enum.map(fn variants ->
+          Stream.map(referenced_renditions, fn variants ->
             variants
-            |> Enum.map(&bandwidth/1)
+            |> Stream.map(&bandwidth/1)
             |> Enum.unzip()
             |> then(fn {a, m} -> {Enum.max(a), Enum.max(m)} end)
           end)
