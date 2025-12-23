@@ -20,38 +20,15 @@ defmodule HLX.Writer do
   @type variant_opts :: [{:tracks, [HLX.Track.t()]} | {:audio, String.t()}]
 
   @opaque t :: %__MODULE__{
-            type: :master | :media,
-            mode: mode(),
-            version: non_neg_integer(),
-            segment_type: segment_type(),
-            max_segments: non_neg_integer(),
-            segment_duration: non_neg_integer(),
-            part_duration: non_neg_integer(),
+            config: Config.t(),
             lead_variant: String.t() | nil,
-            storage_dir: Path.t(),
             variants: %{String.t() => Variant.t()},
             queues: %{String.t() => {SampleQueue.t(), PartQueue.t() | nil}},
-            state: :init | :muxing | :closed,
-            on_segment_created: (String.t(), HLX.Segment.t() -> any()) | nil,
-            on_part_created: (String.t(), HLX.Part.t() -> any()) | nil
+            state: :init | :muxing | :closed
           }
 
-  defstruct [
-    :type,
-    :mode,
-    :segment_type,
-    :version,
-    :max_segments,
-    :segment_duration,
-    :part_duration,
-    :lead_variant,
-    :storage_dir,
-    :on_segment_created,
-    :on_part_created,
-    variants: %{},
-    queues: %{},
-    state: :init
-  ]
+  @enforce_keys [:config]
+  defstruct @enforce_keys ++ [:lead_variant, variants: %{}, queues: %{}, state: :init]
 
   @doc """
   Creates a new HLS writer.
@@ -64,6 +41,9 @@ defmodule HLX.Writer do
     * `storage_dir` - The directory where to store the playlists and segments. This is required.
     * `segment_duration` - The target duration of each segment in milliseconds. Defaults to 2000.
     * `part_duration` - The target duration of each part in milliseconds (only for low-latency segments). Defaults to 300.
+    * `server_control` - A keyword list with server control options:
+      * `can_block_reload` - A boolean indicating if the server support blocking manifest reload until a certain segment/part is available.
+      Defaults to `false`.
 
   You can provide callbacks for segment and part creation by adding the following options:
     * `on_segment_created` - A 2-arity function that will be called when a new segment is created.
@@ -74,7 +54,7 @@ defmodule HLX.Writer do
   @spec new(Keyword.t()) :: {:ok, t()}
   def new(options) do
     with {:ok, config} <- Config.new(options) do
-      {:ok, struct(%__MODULE__{}, config)}
+      {:ok, %__MODULE__{config: Map.new(config)}}
     end
   end
 
@@ -105,21 +85,16 @@ defmodule HLX.Writer do
     * `auto_select` - A boolean setting the auto select.
   """
   @spec add_rendition(t(), String.t(), rendition_opts()) :: {:ok, t()} | {:error, any()}
-  def add_rendition(%{type: :media}, _name, _opts), do: {:error, :not_master_playlist}
-
-  def add_rendition(%{state: state}, _name, _opts) when state != :init, do: {:error, :bad_state}
-
   def add_rendition(writer, name, opts) do
-    # Validate options
-    muxer_options = [segment_type: writer.segment_type, max_segments: writer.max_segments]
+    cond do
+      writer.config[:type] == :media ->
+        {:error, :not_master_playlist}
 
-    rendition_options =
-      opts ++
-        [type: :rendition, max_segments: writer.max_segments, storage_dir: writer.storage_dir]
+      writer.state != :init ->
+        {:error, :bad_state}
 
-    with {:ok, rendition} <- TracksMuxer.new(name, [opts[:track]], muxer_options) do
-      variant = Variant.new(name, rendition, rendition_options)
-      {:ok, %{writer | variants: Map.put(writer.variants, name, variant)}}
+      true ->
+        do_add_rendition(writer, name, opts)
     end
   end
 
@@ -147,38 +122,16 @@ defmodule HLX.Writer do
     * `audio` - Reference to a `group_id` of a rendition.
   """
   @spec add_variant(t(), String.t(), variant_opts()) :: {:ok, t()} | {:error, any()}
-  def add_variant(writer, _name, _options)
-      when writer.type == :media and map_size(writer.variants) >= 1 do
-    {:error, "Media playlist support only one variant"}
-  end
-
-  def add_variant(%{state: state}, _name, _opts) when state != :init, do: {:error, :bad_state}
-
   def add_variant(writer, name, options) do
-    # TODO: validate options
-    muxer_options = [segment_type: writer.segment_type]
+    cond do
+      writer.config[:type] == :media and map_size(writer.variants) >= 1 ->
+        {:error, "Media playlist support only one variant"}
 
-    rendition_options = [
-      target_duration: writer.segment_duration,
-      segment_type: writer.segment_type,
-      max_segments: writer.max_segments,
-      audio: options[:audio],
-      type: :variant,
-      storage_dir: writer.storage_dir
-    ]
+      writer.state != :init ->
+        {:error, :bad_state}
 
-    with {:ok, tracks_muxer} <- TracksMuxer.new(name, options[:tracks], muxer_options) do
-      variant = Variant.new(name, tracks_muxer, rendition_options)
-
-      lead_variant =
-        cond do
-          not is_nil(writer.lead_variant) -> writer.lead_variant
-          not is_nil(tracks_muxer.lead_track) -> name
-          true -> nil
-        end
-
-      {:ok,
-       %{writer | lead_variant: lead_variant, variants: Map.put(writer.variants, name, variant)}}
+      true ->
+        do_add_variant(writer, name, options)
     end
   end
 
@@ -200,7 +153,7 @@ defmodule HLX.Writer do
   def write_sample(%{state: :init} = writer, variant_id, sample) do
     writer =
       cond do
-        writer.type == :media ->
+        writer.config[:type] == :media ->
           [{id, variant}] = Map.to_list(writer.variants)
           %{writer | queues: Map.put(writer.queues, id, create_queues(writer, variant))}
 
@@ -296,6 +249,48 @@ defmodule HLX.Writer do
     |> maybe_invoke_callbacks(new_segments)
 
     :ok
+  end
+
+  defp do_add_rendition(%{config: config} = writer, name, opts) do
+    # Validate options
+    muxer_options = [segment_type: config[:segment_type], max_segments: config[:max_segments]]
+
+    rendition_options =
+      opts ++
+        [type: :rendition, max_segments: config[:max_segments], storage_dir: config[:storage_dir]]
+
+    with {:ok, rendition} <- TracksMuxer.new(name, [opts[:track]], muxer_options) do
+      variant = Variant.new(name, rendition, rendition_options)
+      {:ok, %{writer | variants: Map.put(writer.variants, name, variant)}}
+    end
+  end
+
+  defp do_add_variant(%{config: config} = writer, name, options) do
+    # TODO: validate options
+    muxer_options = [segment_type: config[:segment_type]]
+
+    rendition_options = [
+      target_duration: config[:segment_duration],
+      segment_type: config[:segment_type],
+      max_segments: config[:max_segments],
+      audio: options[:audio],
+      type: :variant,
+      storage_dir: config[:storage_dir]
+    ]
+
+    with {:ok, tracks_muxer} <- TracksMuxer.new(name, options[:tracks], muxer_options) do
+      variant = Variant.new(name, tracks_muxer, rendition_options)
+
+      lead_variant =
+        cond do
+          not is_nil(writer.lead_variant) -> writer.lead_variant
+          not is_nil(tracks_muxer.lead_track) -> name
+          true -> nil
+        end
+
+      {:ok,
+       %{writer | lead_variant: lead_variant, variants: Map.put(writer.variants, name, variant)}}
+    end
   end
 
   defp push_samples(samples, variants) do
@@ -441,31 +436,32 @@ defmodule HLX.Writer do
 
   defp serialize_playlists(%{mode: :vod} = writer, false), do: writer
 
-  defp serialize_playlists(%{variants: variants} = writer, end_list?) do
+  defp serialize_playlists(%{variants: variants, config: config} = writer, end_list?) do
     Enum.each(variants, fn {_key, variant} ->
       preload_hint =
-        if not end_list? and writer.segment_type == :low_latency do
+        if not end_list? and writer.config[:segment_type] == :low_latency do
           {:part, Variant.next_part_name(variant)}
         end
 
       playlist =
         HLX.MediaPlaylist.to_m3u8(variant.playlist,
-          version: writer.version,
-          playlist_type: if(writer.mode == :vod, do: :vod),
-          preload_hint: preload_hint
+          version: config[:version],
+          playlist_type: if(config[:mode] == :vod, do: :vod),
+          preload_hint: preload_hint,
+          can_block_reload?: config[:server_control][:can_block_reload]
         )
 
       playlist = ExM3U8.serialize(playlist)
       playlist = if end_list?, do: playlist <> "#EXT-X-ENDLIST\n", else: playlist
 
-      File.write!(Path.join(writer.storage_dir, "#{variant.id}.m3u8"), playlist)
+      File.write!(Path.join(config[:storage_dir], "#{variant.id}.m3u8"), playlist)
     end)
 
-    if writer.type == :master, do: serialize_master_playlist(writer)
+    if config[:type] == :master, do: serialize_master_playlist(writer)
     writer
   end
 
-  defp serialize_master_playlist(writer) do
+  defp serialize_master_playlist(%{config: config} = writer) do
     streams =
       Enum.map(writer.variants, fn {uri, variant} ->
         renditions = get_referenced_renditions(variant, Map.values(writer.variants))
@@ -474,12 +470,12 @@ defmodule HLX.Writer do
 
     payload =
       ExM3U8.serialize(%ExM3U8.MultivariantPlaylist{
-        version: writer.version,
+        version: config[:version],
         independent_segments: true,
         items: streams
       })
 
-    File.write!(Path.join(writer.storage_dir, "master.m3u8"), payload)
+    File.write!(Path.join(config[:storage_dir], "master.m3u8"), payload)
   end
 
   defp create_queues(writer, variant, dependant_variants \\ []) do
@@ -489,7 +485,7 @@ defmodule HLX.Writer do
     sample_queue =
       Enum.reduce(
         tracks,
-        SampleQueue.new(variant.id, writer.segment_duration),
+        SampleQueue.new(variant.id, writer.config[:segment_duration]),
         &SampleQueue.add_track(&2, {variant.id, &1.id}, &1.id == lead_track, &1.timescale)
       )
 
@@ -504,12 +500,12 @@ defmodule HLX.Writer do
       end)
 
     part_queue =
-      if writer.segment_type == :low_latency do
+      if writer.config[:segment_type] == :low_latency do
         [variant | dependant_variants]
         |> Enum.flat_map(
           &Enum.map(TracksMuxer.tracks(&1.tracks_muxer), fn track -> {&1.id, track} end)
         )
-        |> Enum.reduce(PartQueue.new(writer.part_duration), fn {id, track}, queue ->
+        |> Enum.reduce(PartQueue.new(writer.config[:part_duration]), fn {id, track}, queue ->
           PartQueue.add_track(queue, id, track)
         end)
       end
@@ -523,16 +519,16 @@ defmodule HLX.Writer do
     |> Map.take(Variant.referenced_renditions(variant))
   end
 
-  defp maybe_invoke_callbacks(writer, new_segments, new_parts \\ []) do
-    if writer.on_part_created do
+  defp maybe_invoke_callbacks(%{config: config} = writer, new_segments, new_parts \\ []) do
+    if config[:on_part_created] do
       Enum.each(new_parts, fn {variant_id, part} ->
-        writer.on_part_created.(variant_id, part)
+        config[:on_part_created].(variant_id, part)
       end)
     end
 
-    if writer.on_segment_created do
+    if config[:on_segment_created] do
       Enum.each(new_segments, fn {variant_id, segment} ->
-        writer.on_segment_created.(variant_id, segment)
+        config[:on_segment_created].(variant_id, segment)
       end)
     end
 
@@ -558,9 +554,9 @@ defmodule HLX.Writer do
 
   defimpl Inspect do
     def inspect(writer, _opts) do
-      "#HLX.Writer<type: #{writer.type}, mode: #{writer.mode}, segment_type: #{writer.segment_type}, " <>
+      "#HLX.Writer<type: #{writer.config[:type]}, mode: #{writer.config[:mode]}, segment_type: #{writer.config[:segment_type]}, " <>
         "variants: #{map_size(writer.variants)}, lead_variant: #{writer.lead_variant}, " <>
-        "max_segments: #{writer.max_segments}>"
+        "max_segments: #{writer.config[:max_segments]}>"
     end
   end
 end

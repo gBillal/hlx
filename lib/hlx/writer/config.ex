@@ -3,6 +3,10 @@ defmodule HLX.Writer.Config do
   Module describing writer config.
   """
 
+  @type server_control :: [
+          can_block_reload: boolean()
+        ]
+
   @type t :: [
           type: :media | :master,
           mode: :vod | :live,
@@ -11,6 +15,7 @@ defmodule HLX.Writer.Config do
           part_duration: non_neg_integer(),
           max_segments: non_neg_integer(),
           storage_dir: String.t() | nil,
+          server_control: server_control(),
           on_segment_created: (String.t(), HLX.Segment.t() -> any()) | nil,
           on_part_created: (String.t(), HLX.Part.t() -> any()) | nil
         ]
@@ -24,7 +29,10 @@ defmodule HLX.Writer.Config do
     max_segments: 6,
     storage_dir: nil,
     on_segment_created: nil,
-    on_part_created: nil
+    on_part_created: nil,
+    server_control: [
+      can_block_reload: false
+    ]
   ]
 
   @spec new(Keyword.t()) :: {:ok, t()} | {:error, String.t()}
@@ -95,7 +103,29 @@ defmodule HLX.Writer.Config do
     validate(rest)
   end
 
+  defp validate([{:server_control, server_control} | rest]) do
+    if Keyword.keyword?(server_control) do
+      case validate_server_control(server_control) do
+        :ok -> validate(rest)
+        error -> error
+      end
+    else
+      {:error, "Invalid value for server_control: #{inspect(server_control)}"}
+    end
+  end
+
   defp validate([{key, value} | _rest]) do
     {:error, "Invalid value for #{to_string(key)}: #{inspect(value)}"}
+  end
+
+  defp validate_server_control([]), do: :ok
+
+  defp validate_server_control([{:can_block_reload, bool} | rest])
+       when is_boolean(bool) do
+    validate_server_control(rest)
+  end
+
+  defp validate_server_control([{key, value} | _rest]) do
+    {:error, "Invalid value for server_control #{to_string(key)}: #{inspect(value)}"}
   end
 end
