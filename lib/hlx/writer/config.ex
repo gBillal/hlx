@@ -29,34 +29,35 @@ defmodule HLX.Writer.Config do
     max_segments: 6,
     storage_dir: nil,
     on_segment_created: nil,
-    on_part_created: nil,
-    server_control: [
-      can_block_reload: false
-    ]
+    on_part_created: nil
+  ]
+
+  @default_server_control [
+    can_block_reload: false
   ]
 
   @spec new(Keyword.t()) :: {:ok, t()} | {:error, String.t()}
   def new(opts) do
     options = Keyword.merge(@default_config, opts)
+    {server_control, options} = Keyword.pop(options, :server_control)
+    server_control = Keyword.merge(@default_server_control, server_control || [])
 
-    case validate(opts) do
-      :ok ->
-        options =
-          if options[:mode] == :vod,
-            do: Keyword.replace!(options, :max_segments, 0),
-            else: options
+    with :ok <- validate(options),
+         :ok <- validate_server_control(server_control) do
+      options =
+        if options[:mode] == :vod,
+          do: Keyword.replace!(options, :max_segments, 0),
+          else: options
 
-        version =
-          case options[:segment_type] do
-            :mpeg_ts -> 6
-            :fmp4 -> 7
-            :low_latency -> 9
-          end
+      version =
+        case options[:segment_type] do
+          :mpeg_ts -> 6
+          :fmp4 -> 7
+          :low_latency -> 9
+        end
 
-        {:ok, Keyword.put(options, :version, version)}
-
-      error ->
-        error
+      config = Keyword.merge(options, server_control: server_control, version: version)
+      {:ok, config}
     end
   end
 
@@ -101,17 +102,6 @@ defmodule HLX.Writer.Config do
   defp validate([{:on_part_created, callback} | rest])
        when is_function(callback, 2) or is_nil(callback) do
     validate(rest)
-  end
-
-  defp validate([{:server_control, server_control} | rest]) do
-    if Keyword.keyword?(server_control) do
-      case validate_server_control(server_control) do
-        :ok -> validate(rest)
-        error -> error
-      end
-    else
-      {:error, "Invalid value for server_control: #{inspect(server_control)}"}
-    end
   end
 
   defp validate([{key, value} | _rest]) do
