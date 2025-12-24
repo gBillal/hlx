@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.0 - 2025-12-24
+
+* Add server control option to writer.
+* Add rendition reports to media playlists for LL-HLS.
+
 ## v0.4.0 - 2025-12-14
 
 * Add support for AV1 codec.

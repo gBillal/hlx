@@ -8,6 +8,7 @@ HLS writer and reader (Planned).
 Features:
   * Writer/Muxer
     * Generate streams in mpeg-ts and fMP4.
+    * Support low-latency HLS (LL-HLS).
     * Generate media playlist and/or multivariant playlists.
     * Generate playlists with one or multiple tracks/streams.
     * Support H.264, H.265, AV1 and AAC codecs.
@@ -33,7 +34,7 @@ The package can be installed by adding `hlx` to your list of dependencies in `mi
 ```elixir
 def deps do
   [
-    {:hlx, "~> 0.4.0"}
+    {:hlx, "~> 0.5.0"}
   ]
 end
 ```
