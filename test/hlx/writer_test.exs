@@ -340,11 +340,9 @@ defmodule HLX.WriterTest do
         |> Writer.add_rendition!("audio", track: audio_track, group_id: "audio-group")
         |> Writer.add_variant!("video", tracks: [video_track], audio: "audio-group")
 
-      assert :ok =
-               writer
-               |> write_video_samples("video")
-               |> write_audio_samples("audio")
-               |> Writer.close()
+      writer
+      |> write_video_samples("video")
+      |> write_audio_samples("audio")
 
       master_playlist = Path.join(dir, "master.m3u8")
       video_playlist = Path.join(dir, "video.m3u8")
@@ -376,8 +374,12 @@ defmodule HLX.WriterTest do
         segments = Enum.filter(playlist.timeline, &is_struct(&1, ExM3U8.Tags.Segment))
         partial_segments = Enum.filter(playlist.timeline, &is_struct(&1, ExM3U8.Tags.Part))
 
-        assert length(segments) == 5
+        assert length(segments) == 4
         assert length(partial_segments) > 0
+
+        # rendition reports
+        uri = if name == "video", do: "audio.m3u8", else: "video.m3u8"
+        assert %ExM3U8.Tags.RenditionReport{uri: ^uri} = List.last(playlist.timeline)
       end
     end
   end

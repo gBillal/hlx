@@ -437,10 +437,24 @@ defmodule HLX.Writer do
   defp serialize_playlists(%{mode: :vod} = writer, false), do: writer
 
   defp serialize_playlists(%{variants: variants, config: config} = writer, end_list?) do
-    Enum.each(variants, fn {_key, variant} ->
-      preload_hint =
-        if not end_list? and writer.config[:segment_type] == :low_latency do
-          {:part, Variant.next_part_name(variant)}
+    preload_hint? = not end_list? and writer.config[:segment_type] == :low_latency
+
+    rendition_reports =
+      if config[:type] == :master,
+        do: serialize_master_playlist(writer),
+        else: []
+
+    Enum.each(variants, fn {id, variant} ->
+      preload_hint = if preload_hint?, do: {:part, Variant.next_part_name(variant)}
+
+      rendition_reports =
+        if preload_hint? do
+          Enum.reduce(rendition_reports, [], fn
+            %{uri: ^id}, acc -> acc
+            report, acc -> [%{report | uri: "#{report.uri}.m3u8"} | acc]
+          end)
+        else
+          []
         end
 
       playlist =
@@ -448,7 +462,8 @@ defmodule HLX.Writer do
           version: config[:version],
           playlist_type: if(config[:mode] == :vod, do: :vod),
           preload_hint: preload_hint,
-          can_block_reload?: config[:server_control][:can_block_reload]
+          can_block_reload?: config[:server_control][:can_block_reload],
+          rendition_reports: rendition_reports
         )
 
       playlist = ExM3U8.serialize(playlist)
@@ -457,25 +472,26 @@ defmodule HLX.Writer do
       File.write!(Path.join(config[:storage_dir], "#{variant.id}.m3u8"), playlist)
     end)
 
-    if config[:type] == :master, do: serialize_master_playlist(writer)
     writer
   end
 
   defp serialize_master_playlist(%{config: config} = writer) do
-    streams =
-      Enum.map(writer.variants, fn {uri, variant} ->
+    {streams, rendition_reports} =
+      Enum.reduce(writer.variants, {[], []}, fn {uri, variant}, {streams, reports} ->
         renditions = get_referenced_renditions(variant, Map.values(writer.variants))
-        %{Variant.to_hls_tag(variant, renditions) | uri: uri <> ".m3u8"}
+        stream = %{Variant.to_hls_tag(variant, renditions) | uri: uri <> ".m3u8"}
+        {[stream | streams], [Variant.rendition_report(variant) | reports]}
       end)
 
     payload =
       ExM3U8.serialize(%ExM3U8.MultivariantPlaylist{
         version: config[:version],
         independent_segments: true,
-        items: streams
+        items: Enum.reverse(streams)
       })
 
     File.write!(Path.join(config[:storage_dir], "master.m3u8"), payload)
+    rendition_reports
   end
 
   defp create_queues(writer, variant, dependant_variants \\ []) do
