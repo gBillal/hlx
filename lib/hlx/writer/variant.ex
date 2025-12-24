@@ -153,6 +153,17 @@ defmodule HLX.Writer.Variant do
   @spec group_id(t()) :: String.t() | nil
   def group_id(%{config: config}), do: config.group_id
 
+  @spec rendition_report(t()) :: {String.t(), {non_neg_integer(), non_neg_integer()}}
+  def rendition_report(variant) do
+    {last_msn, last_part} = MediaPlaylist.last_part(variant.playlist)
+
+    %ExM3U8.Tags.RenditionReport{
+      uri: variant.id,
+      last_msn: last_msn,
+      last_part: last_part
+    }
+  end
+
   @spec to_hls_tag(t(), %{String.t() => t()}) :: struct()
   def to_hls_tag(variant, referenced_renditions) do
     case variant.config.type do

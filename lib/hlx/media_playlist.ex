@@ -102,8 +102,11 @@ defmodule HLX.MediaPlaylist do
 
     timeline =
       case opts[:preload_hint] do
-        {type, uri} -> [%ExM3U8.Tags.PreloadHint{type: type, uri: uri} | timeline]
-        _ -> timeline
+        {type, uri} ->
+          opts[:rendition_reports] ++ [%ExM3U8.Tags.PreloadHint{type: type, uri: uri} | timeline]
+
+        _ ->
+          timeline
       end
 
     server_control =
@@ -145,6 +148,13 @@ defmodule HLX.MediaPlaylist do
 
   @spec segment_count(t()) :: non_neg_integer()
   def segment_count(state), do: state.segment_count + state.sequence_number
+
+  def last_part(%{pending_segment: nil} = state),
+    do: {state.segment_count + state.sequence_number, state.part_index}
+
+  def last_part(%{pending_segment: segment} = state) do
+    {state.segment_count + state.sequence_number, hd(segment.parts).index}
+  end
 
   defp delete_old_parts(state) do
     if not is_nil(state.part_target_duration) and state.segment_count > 2 do
