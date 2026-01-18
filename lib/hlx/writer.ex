@@ -439,10 +439,10 @@ defmodule HLX.Writer do
   defp serialize_playlists(%{variants: variants, config: config} = writer, end_list?) do
     preload_hint? = not end_list? and writer.config[:segment_type] == :low_latency
 
-    rendition_reports =
+    {rendition_reports, part_target_duration} =
       if config[:type] == :master,
         do: serialize_master_playlist(writer),
-        else: []
+        else: {[], 0}
 
     Enum.each(variants, fn {id, variant} ->
       preload_hint = if preload_hint?, do: {:part, Variant.next_part_name(variant)}
@@ -463,7 +463,8 @@ defmodule HLX.Writer do
           playlist_type: if(config[:mode] == :vod, do: :vod),
           preload_hint: preload_hint,
           can_block_reload?: config[:server_control][:can_block_reload],
-          rendition_reports: rendition_reports
+          rendition_reports: rendition_reports,
+          part_hold_back: part_target_duration * 3
         )
 
       playlist = ExM3U8.serialize(playlist)
@@ -476,11 +477,16 @@ defmodule HLX.Writer do
   end
 
   defp serialize_master_playlist(%{config: config} = writer) do
-    {streams, rendition_reports} =
-      Enum.reduce(writer.variants, {[], []}, fn {uri, variant}, {streams, reports} ->
+    {streams, rendition_reports, part_target_duration} =
+      Enum.reduce(writer.variants, {[], [], 0}, fn {uri, variant},
+                                                   {streams, reports, part_target_duration} ->
         renditions = get_referenced_renditions(variant, Map.values(writer.variants))
+
+        part_target_duration =
+          max(part_target_duration, variant.playlist.part_target_duration || 0)
+
         stream = %{Variant.to_hls_tag(variant, renditions) | uri: uri <> ".m3u8"}
-        {[stream | streams], [Variant.rendition_report(variant) | reports]}
+        {[stream | streams], [Variant.rendition_report(variant) | reports], part_target_duration}
       end)
 
     payload =
@@ -491,7 +497,7 @@ defmodule HLX.Writer do
       })
 
     File.write!(Path.join(config[:storage_dir], "master.m3u8"), payload)
-    rendition_reports
+    {rendition_reports, part_target_duration}
   end
 
   defp create_queues(writer, variant, dependant_variants \\ []) do

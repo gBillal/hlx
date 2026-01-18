@@ -57,7 +57,8 @@ defmodule HLX.MediaPlaylist do
       pending_segment
       | uri: segment.uri,
         size: segment.size,
-        duration: segment.duration
+        duration: segment.duration,
+        timestamp: segment.timestamp
     }
 
     add_segment(%{state | pending_segment: nil}, pending_segment)
@@ -113,8 +114,8 @@ defmodule HLX.MediaPlaylist do
       if state.part_target_duration do
         %ExM3U8.MediaPlaylist.ServerControl{
           can_block_reload?: Keyword.get(opts, :can_block_reload?, false),
-          hold_back: state.target_duration * 3,
-          part_hold_back: state.part_target_duration * 3
+          hold_back: nil,
+          part_hold_back: Keyword.get(opts, :part_hold_back, state.part_target_duration * 3)
         }
       end
 
