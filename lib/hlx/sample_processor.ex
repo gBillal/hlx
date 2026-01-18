@@ -34,30 +34,6 @@ defmodule HLX.SampleProcessor do
     {track, %{sample | payload: payload, sync?: keyframe?}}
   end
 
-  def process_sample(%{codec: codec} = track, sample, container) when codec in [:h265, :hevc] do
-    {{vps, sps, pps}, nalus} = H265.pop_parameter_sets(sample.payload)
-    keyframe? = Enum.any?(nalus, &H265.NALU.keyframe?/1)
-
-    track =
-      if keyframe? and sps != [] and pps != [],
-        do: Track.update_priv_data(track, {List.first(vps), List.first(sps), pps}),
-        else: track
-
-    payload =
-      cond do
-        container == :fmp4 ->
-          Enum.map(nalus, &[<<byte_size(&1)::32>>, &1])
-
-        container == :mpeg_ts and H265.NALU.type(List.first(nalus)) != :aud ->
-          to_annexb(@h265_aud, sample.payload)
-
-        true ->
-          to_annexb(sample.payload)
-      end
-
-    {track, %{sample | payload: payload, sync?: keyframe?}}
-  end
-
   def process_sample(%{codec: :av1, priv_data: nil} = track, sample, :fmp4) do
     obus = if is_list(track.payload), do: track.payload, else: AV1.obus(track.payload)
     track = %{track | priv_data: Enum.find(obus, &(AV1.OBU.type(&1) == :sequence_header))}
@@ -90,6 +66,30 @@ defmodule HLX.SampleProcessor do
       true ->
         {track, %{sample | sync?: true}}
     end
+  end
+
+  def process_sample(%{codec: codec} = track, sample, container) when codec in [:h265, :hevc] do
+    {{vps, sps, pps}, nalus} = H265.pop_parameter_sets(sample.payload)
+    keyframe? = Enum.any?(nalus, &H265.NALU.keyframe?/1)
+
+    track =
+      if keyframe? and sps != [] and pps != [],
+        do: Track.update_priv_data(track, {List.first(vps), List.first(sps), pps}),
+        else: track
+
+    payload =
+      cond do
+        container == :fmp4 ->
+          Enum.map(nalus, &[<<byte_size(&1)::32>>, &1])
+
+        container == :mpeg_ts and H265.NALU.type(List.first(nalus)) != :aud ->
+          to_annexb(@h265_aud, sample.payload)
+
+        true ->
+          to_annexb(sample.payload)
+      end
+
+    {track, %{sample | payload: payload, sync?: keyframe?}}
   end
 
   def process_sample(track, payload, _), do: {track, payload}

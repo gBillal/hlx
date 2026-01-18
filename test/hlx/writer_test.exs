@@ -381,6 +381,16 @@ defmodule HLX.WriterTest do
         uri = if name == "video", do: "audio.m3u8", else: "video.m3u8"
         assert %ExM3U8.Tags.RenditionReport{uri: ^uri} = List.last(playlist.timeline)
       end
+
+      # part hold back is equal
+      assert [part_hold_back] =
+               [video_playlist, audio_playlist]
+               |> Stream.map(&File.read!/1)
+               |> Stream.map(&ExM3U8.deserialize_media_playlist!(&1, []))
+               |> Stream.map(& &1.info.server_control.part_hold_back)
+               |> Enum.uniq()
+
+      assert is_float(part_hold_back)
     end
   end
 

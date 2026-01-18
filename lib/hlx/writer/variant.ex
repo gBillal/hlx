@@ -102,41 +102,41 @@ defmodule HLX.Writer.Variant do
 
   @spec flush(t()) :: {HLX.Segment.t(), t()}
   def flush(variant) do
-    {data, duration, tracks_muxer} = TracksMuxer.flush(variant.tracks_muxer)
+    case TracksMuxer.flush(variant.tracks_muxer) do
+      {_data, dur, _tracks_muxer} when dur == 0 ->
+        {nil, variant}
 
-    if duration == 0 do
-      {nil, variant}
-    else
-      {uri, storage} = Storage.Segment.store_segment(data, variant.storage)
+      {data, duration, tracks_muxer} ->
+        {uri, storage} = Storage.Segment.store_segment(data, variant.storage)
 
-      segment =
-        %HLX.Segment{
-          index: MediaPlaylist.segment_count(variant.playlist),
-          uri: uri,
-          size: IO.iodata_length(data),
-          duration: duration,
-          timestamp: calculate_timestamp(variant)
-        }
+        segment =
+          %HLX.Segment{
+            index: MediaPlaylist.segment_count(variant.playlist),
+            uri: uri,
+            size: IO.iodata_length(data),
+            duration: duration,
+            timestamp: calculate_timestamp(variant)
+          }
 
-      {playlist, storage} =
-        case MediaPlaylist.add_segment(variant.playlist, segment) do
-          {playlist, nil, parts} ->
-            {playlist, Storage.Segment.delete_parts(parts, storage)}
+        {playlist, storage} =
+          case MediaPlaylist.add_segment(variant.playlist, segment) do
+            {playlist, nil, parts} ->
+              {playlist, Storage.Segment.delete_parts(parts, storage)}
 
-          {playlist, discarded, parts} ->
-            storage = Storage.Segment.delete_segment(discarded, storage)
-            storage = Storage.Segment.delete_parts(parts, storage)
-            {playlist, storage}
-        end
+            {playlist, discarded, parts} ->
+              storage = Storage.Segment.delete_segment(discarded, storage)
+              storage = Storage.Segment.delete_parts(parts, storage)
+              {playlist, storage}
+          end
 
-      {segment,
-       %{
-         variant
-         | tracks_muxer: tracks_muxer,
-           playlist: playlist,
-           storage: storage,
-           first_dts: %{}
-       }}
+        {segment,
+         %{
+           variant
+           | tracks_muxer: tracks_muxer,
+             playlist: playlist,
+             storage: storage,
+             first_dts: %{}
+         }}
     end
   end
 
