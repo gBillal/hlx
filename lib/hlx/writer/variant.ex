@@ -172,37 +172,8 @@ defmodule HLX.Writer.Variant do
 
       _ ->
         referenced_renditions = Map.values(referenced_renditions)
-
-        referenced_codecs =
-          referenced_renditions
-          |> List.flatten()
-          |> Stream.flat_map(&TracksMuxer.tracks(&1.tracks_muxer))
-          |> Enum.map(& &1.mime)
-
-        tracks = TracksMuxer.tracks(variant.tracks_muxer)
-
-        codecs =
-          tracks
-          |> Stream.map(& &1.mime)
-          |> Stream.concat(referenced_codecs)
-          |> Stream.uniq()
-          |> Enum.join(",")
-
-        resolution =
-          Enum.find_value(tracks, fn
-            %{width: nil} -> nil
-            %{width: width, height: height} -> {width, height}
-          end)
-
-        {avg_bitrates, max_bitrates} =
-          Stream.map(referenced_renditions, fn variants ->
-            variants
-            |> Stream.map(&bandwidth/1)
-            |> Enum.unzip()
-            |> then(fn {a, m} -> {Enum.max(a), Enum.max(m)} end)
-          end)
-          |> Enum.unzip()
-
+        {codecs, resolution} = codecs_resolution(variant, referenced_renditions)
+        {avg_bitrates, max_bitrates} = avg_max_bandwidths(referenced_renditions)
         {avg_band, max_band} = bandwidth(variant)
 
         %{
@@ -239,6 +210,16 @@ defmodule HLX.Writer.Variant do
     }
   end
 
+  defp avg_max_bandwidths(renditions) do
+    Stream.map(renditions, fn variants ->
+      variants
+      |> Stream.map(&bandwidth/1)
+      |> Enum.unzip()
+      |> then(fn {a, m} -> {Enum.max(a), Enum.max(m)} end)
+    end)
+    |> Enum.unzip()
+  end
+
   defp bandwidth(%{playlist: playlist}), do: MediaPlaylist.bandwidth(playlist)
 
   defp calculate_timestamp(%{base_timestamp: nil}), do: nil
@@ -254,5 +235,30 @@ defmodule HLX.Writer.Variant do
 
     duration = div((first_dts - base_dts) * 1000, timescale)
     DateTime.from_unix!(variant.base_timestamp + duration, :millisecond)
+  end
+
+  defp codecs_resolution(variant, referenced_renditions) do
+    referenced_codecs =
+      referenced_renditions
+      |> List.flatten()
+      |> Stream.flat_map(&TracksMuxer.tracks(&1.tracks_muxer))
+      |> Enum.map(& &1.mime)
+
+    tracks = TracksMuxer.tracks(variant.tracks_muxer)
+
+    codecs =
+      tracks
+      |> Stream.map(& &1.mime)
+      |> Stream.concat(referenced_codecs)
+      |> Stream.uniq()
+      |> Enum.join(",")
+
+    resolution =
+      Enum.find_value(tracks, fn
+        %{width: nil} -> nil
+        %{width: width, height: height} -> {width, height}
+      end)
+
+    {codecs, resolution}
   end
 end

@@ -266,6 +266,7 @@ defmodule HLX.Writer do
   end
 
   defp do_add_variant(%{config: config} = writer, name, options) do
+    # credo:disable-for-next-line
     # TODO: validate options
     muxer_options = [segment_type: config[:segment_type]]
 

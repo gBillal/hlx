@@ -17,7 +17,7 @@ defmodule HLX.WriterTest do
     id: 2,
     type: :audio,
     codec: :aac,
-    timescale: 44800
+    timescale: 44_800
   }
 
   setup do
@@ -95,6 +95,7 @@ defmodule HLX.WriterTest do
           assert String.ends_with?(segment.uri, extension)
         end
 
+        # credo:disable-for-next-line
         # TODO: check the actual segment data
       end
 
@@ -375,7 +376,7 @@ defmodule HLX.WriterTest do
         partial_segments = Enum.filter(playlist.timeline, &is_struct(&1, ExM3U8.Tags.Part))
 
         assert length(segments) == 4
-        assert length(partial_segments) > 0
+        assert partial_segments != []
 
         # rendition reports
         uri = if name == "video", do: "audio.m3u8", else: "video.m3u8"

@@ -36,7 +36,8 @@ defmodule HLX.MixProject do
       {:ex_m3u8, "~> 0.15.0"},
       {:mpeg_ts, "~> 3.3.5"},
       {:qex, "~> 0.5.1"},
-      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 
