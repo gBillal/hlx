@@ -177,7 +177,7 @@ defmodule HLX.Writer do
 
           queues =
             Map.new(independant_variants, fn variant ->
-              extra_variants = if variant.id == lead_variant_id, do: dependant_variants, else: []
+              extra_variants = (variant.id == lead_variant_id && dependant_variants) || []
               {variant.id, create_queues(writer, variant, extra_variants)}
             end)
 
@@ -266,6 +266,7 @@ defmodule HLX.Writer do
   end
 
   defp do_add_variant(%{config: config} = writer, name, options) do
+    # credo:disable-for-next-line
     # TODO: validate options
     muxer_options = [segment_type: config[:segment_type]]
 
@@ -449,10 +450,9 @@ defmodule HLX.Writer do
 
       rendition_reports =
         if preload_hint? do
-          Enum.reduce(rendition_reports, [], fn
-            %{uri: ^id}, acc -> acc
-            report, acc -> [%{report | uri: "#{report.uri}.m3u8"} | acc]
-          end)
+          rendition_reports
+          |> Enum.reject(&(&1.uri == id))
+          |> Enum.map(&%{&1 | uri: &1.uri <> ".m3u8"})
         else
           []
         end

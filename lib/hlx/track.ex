@@ -18,8 +18,8 @@ defmodule HLX.Track do
   """
 
   alias ExMP4.Box
-  alias MediaCodecs.{MPEG4, H264, H265}
   alias MediaCodecs.AV1.OBU
+  alias MediaCodecs.{H264, H265, MPEG4}
 
   @codecs [:h264, :h265, :hevc, :aac, :av1]
 
